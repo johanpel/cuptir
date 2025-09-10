@@ -8,14 +8,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up context and activate a callback:
     let _cuptir = cuptir::Context::builder()
         .with_activity_kinds([
-            cudarc::cupti::sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
-            cudarc::cupti::sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY2,
-            cudarc::cupti::sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY2,
+            // cudarc::cupti::sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
+            // cudarc::cupti::sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY2,
+            // cudarc::cupti::sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY2,
             cudarc::cupti::sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY_POOL,
         ])
         .with_activity_latency_timestamps(true)
         .with_activity_record_handler(|record| {
-            println!("{record:#?}");
+            println!("{record:?}");
             Ok(())
         })
         .build()?;
