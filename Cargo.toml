@@ -1,0 +1,26 @@
+[package]
+name = "cuptir"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cudarc = { git = "https://github.com/johanpel/cudarc.git", branch = "cupti", default-features = false, features = [
+    "cuda-version-from-build-system",
+    "dynamic-linking",
+    "cupti",
+    "driver",
+    "std",
+] }
+
+thiserror = "2.0.16"
+tracing = { version = "0.1.41" }
+cpp_demangle = "0.4.4"
+[dev-dependencies]
+candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.9.1", features = [
+    "cuda",
+] }
+tracing-subscriber = "0.3.20"
+serial_test = "3.2.0"
+
+[build-dependencies]
+bindgen = "0.72.1"
