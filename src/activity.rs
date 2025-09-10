@@ -6,6 +6,7 @@ use std::{
 };
 
 use cudarc::cupti::{result as cupti, sys};
+use strum::FromRepr;
 use tracing::trace;
 
 use crate::error::CuptirError;
@@ -37,6 +38,87 @@ fn handle_record(record: Record) -> Result<(), CuptirError> {
         handler(record).map_err(|e| CuptirError::AcivityRecordHandler(e.to_string()))
     } else {
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, FromRepr, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum Kind {
+    Memcpy = 1,
+    Memset = 2,
+    Kernel = 3,
+    Driver = 4,
+    Runtime = 5,
+    Event = 6,
+    Metric = 7,
+    Device = 8,
+    Context = 9,
+    ConcurrentKernel = 10,
+    Name = 11,
+    Marker = 12,
+    MarkerData = 13,
+    SourceLocator = 14,
+    GlobalAccess = 15,
+    Branch = 16,
+    Overhead = 17,
+    CdpKernel = 18,
+    Preemption = 19,
+    Environment = 20,
+    EventInstance = 21,
+    Memcpy2 = 22,
+    MetricInstance = 23,
+    InstructionExecution = 24,
+    UnifiedMemoryCounter = 25,
+    Function = 26,
+    Module = 27,
+    DeviceAttribute = 28,
+    SharedAccess = 29,
+    PcSampling = 30,
+    PcSamplingRecordInfo = 31,
+    InstructionCorrelation = 32,
+    OpenaccData = 33,
+    OpenaccLaunch = 34,
+    OpenaccOther = 35,
+    CudaEvent = 36,
+    Stream = 37,
+    Synchronization = 38,
+    ExternalCorrelation = 39,
+    Nvlink = 40,
+    InstantaneousEvent = 41,
+    InstantaneousEventInstance = 42,
+    InstantaneousMetric = 43,
+    InstantaneousMetricInstance = 44,
+    Memory = 45,
+    Pcie = 46,
+    Openmp = 47,
+    InternalLaunchApi = 48,
+    Memory2 = 49,
+    MemoryPool = 50,
+    GraphTrace = 51,
+    Jit = 52,
+    DeviceGraphTrace = 53,
+    MemDecompress = 54,
+    ConfidentialComputeRotation = 55,
+}
+
+impl From<Kind> for sys::CUpti_ActivityKind {
+    fn from(value: Kind) -> Self {
+        unsafe { std::mem::transmute(value) }
+    }
+}
+
+impl TryFrom<sys::CUpti_ActivityKind> for Kind {
+    type Error = CuptirError;
+
+    fn try_from(value: sys::CUpti_ActivityKind) -> Result<Self, Self::Error> {
+        match value {
+            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INVALID
+            | sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_COUNT
+            | sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_FORCE_INT => {
+                Err(CuptirError::SentinelEnum(value as u32))
+            }
+            other => Self::from_repr(other as u32).ok_or(CuptirError::Corrupted),
+        }
     }
 }
 

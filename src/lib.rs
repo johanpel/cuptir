@@ -20,7 +20,7 @@ pub mod error;
 #[derive(Debug)]
 #[repr(C)]
 pub struct Context {
-    enabled_activity_kinds: Vec<ffi::CUpti_ActivityKind>,
+    enabled_activity_kinds: Vec<activity::Kind>,
     ffi_subscriber_handle: ffi::CUpti_SubscriberHandle,
     user_data: *mut u8, // User data on the heap, TODO make generic
 }
@@ -35,23 +35,20 @@ impl Context {
 /// Builder to help initialize a [Context].
 #[derive(Default)]
 pub struct ContextBuilder {
-    enabled_activity_kinds: HashSet<ffi::CUpti_ActivityKind>,
+    enabled_activity_kinds: HashSet<activity::Kind>,
     activity_record_handler: Option<Box<activity::RecordHandler>>,
     activity_latency_timestamps: bool,
 }
 
 impl ContextBuilder {
     /// Add the supplied activity kind to the set of activated activity kinds.
-    pub fn with_activity_kind(mut self, kind: ffi::CUpti_ActivityKind) -> Self {
+    pub fn with_activity_kind(mut self, kind: activity::Kind) -> Self {
         self.enabled_activity_kinds.insert(kind);
         self
     }
 
     /// Add the supplied activity kinds to the set of activated activity kinds.
-    pub fn with_activity_kinds(
-        mut self,
-        kinds: impl IntoIterator<Item = ffi::CUpti_ActivityKind>,
-    ) -> Self {
+    pub fn with_activity_kinds(mut self, kinds: impl IntoIterator<Item = activity::Kind>) -> Self {
         self.enabled_activity_kinds.extend(kinds);
         self
     }
@@ -125,7 +122,7 @@ impl ContextBuilder {
         context
             .enabled_activity_kinds
             .iter()
-            .try_for_each(|activity_kind| cupti::activity::enable(*activity_kind))?;
+            .try_for_each(|activity_kind| cupti::activity::enable((*activity_kind).into()))?;
 
         Ok(context)
     }
@@ -147,7 +144,7 @@ impl Drop for Context {
         if let Err(error) = self
             .enabled_activity_kinds
             .iter()
-            .try_for_each(|activity_kind| cupti::activity::disable(*activity_kind))
+            .try_for_each(|activity_kind| cupti::activity::disable((*activity_kind).into()))
         {
             tracing::warn!("unable to disable CUPTI activity: {error}");
         }
@@ -177,7 +174,7 @@ mod tests {
     #[serial]
     fn make_context() -> std::result::Result<(), CuptirError> {
         let _context = Context::builder()
-            .with_activity_kind(ffi::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL)
+            .with_activity_kind(activity::Kind::ConcurrentKernel)
             .build()?;
         Ok(())
     }
@@ -210,7 +207,7 @@ mod tests {
                 recs_cb.lock().unwrap().push(record);
                 Ok(())
             })
-            .with_activity_kind(ffi::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DRIVER)
+            .with_activity_kind(activity::Kind::Driver)
             .build();
 
         // Init the driver and get the count. This should result in exactly one event.
