@@ -247,7 +247,7 @@ pub struct KernelRecord {
     pub channel_type: ChannelType,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum ChannelType {
     Compute = 1,
@@ -295,7 +295,7 @@ pub struct MemcpyRecord {
     pub channel_type: ChannelType,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum MemoryOperationType {
     Allocation = 1,
@@ -315,7 +315,7 @@ impl TryFrom<sys::CUpti_ActivityMemoryOperationType> for MemoryOperationType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum MemoryKind {
     Pageable = 1,
@@ -380,7 +380,7 @@ pub struct MemoryRecord {
     // pub memory_pool_config: sys::CUpti_ActivityMemory4__bindgen_ty_1,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum MemoryPoolOperationType {
     Created = 1,
@@ -402,7 +402,7 @@ impl TryFrom<sys::CUpti_ActivityMemoryPoolOperationType> for MemoryPoolOperation
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum MemoryPoolType {
     Local = 1,
