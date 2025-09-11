@@ -574,7 +574,6 @@ impl Record {
             }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY2 => {
                 let memory_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityMemory4) };
-                trace!("{}", memory_record.source.is_null());
                 let name = NonNull::new(memory_record.name as *mut _).map(|p| {
                     unsafe { CStr::from_ptr(p.as_ptr()) }
                         .to_string_lossy()

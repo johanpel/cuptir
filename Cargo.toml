@@ -16,7 +16,6 @@ cudarc = { git = "https://github.com/johanpel/cudarc.git", branch = "cupti", def
 thiserror = "2.0.12"
 tracing = "0.1.41"
 
-
 [dev-dependencies]
 candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.9.1", features = [
     "cuda",

@@ -30,6 +30,15 @@ impl Context {
     pub fn builder() -> ContextBuilder {
         ContextBuilder::default()
     }
+
+    /// Flush the activity buffers, potentially triggering the activity record handler.
+    pub fn flush_activity() -> Result<(), CuptirError> {
+        trace!("flushing activity buffer");
+        cupti::activity::flush_all(
+            ffi::CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_FLUSH_FORCED as u32,
+        )?;
+        Ok(())
+    }
 }
 
 /// Builder to help initialize a [Context].
@@ -130,11 +139,8 @@ impl ContextBuilder {
 
 impl Drop for Context {
     fn drop(&mut self) {
-        trace!("flushing activity buffer");
-        if let Err(error) = cupti::activity::flush_all(
-            ffi::CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_FLUSH_FORCED as u32,
-        ) {
-            tracing::warn!("unable to flush CUPTI activity: {error}");
+        if let Err(error) = Self::flush_activity() {
+            tracing::warn!("unable to flush activity buffer: {error}")
         }
 
         trace!(
