@@ -574,11 +574,18 @@ impl Record {
             }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY2 => {
                 let memory_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityMemory4) };
-                let name = NonNull::new(memory_record.name as *mut _).map(|p| {
-                    unsafe { CStr::from_ptr(p.as_ptr()) }
-                        .to_string_lossy()
-                        .into_owned()
-                });
+                let name = NonNull::new(memory_record.name as *mut _)
+                    .map(|p| {
+                        unsafe { CStr::from_ptr(p.as_ptr()) }
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .map(|name| {
+                        cpp_demangle::Symbol::new(name.as_str())
+                            .map(|symbol| symbol.to_string())
+                            .ok()
+                            .unwrap_or(name)
+                    });
                 let source = NonNull::new(memory_record.source as *mut _).map(|p| {
                     unsafe { CStr::from_ptr(p.as_ptr()) }
                         .to_string_lossy()
