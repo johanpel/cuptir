@@ -14,8 +14,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cuptir::activity::Kind::MemoryPool,
         ])
         .with_activity_latency_timestamps(true)
-        .with_activity_record_handler(|record| {
-            println!("{record:?}");
+        .with_activity_record_buffer_callback(|buffer| {
+            buffer.into_iter().for_each(|record| println!("{record:?}"));
             Ok(())
         })
         .build()?;

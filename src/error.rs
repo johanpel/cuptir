@@ -12,8 +12,8 @@ pub enum CuptirError {
     NotImplemented,
     #[error("unexpected sentinel enum variant: {0}")]
     SentinelEnum(u32),
-    #[error("acivity record handler: {0}")]
-    AcivityRecordHandler(String),
+    #[error("acivity record buffer handler: {0}")]
+    ActivityRecordBufferHandler(String),
     #[error("demangle: {0}")]
     Demangle(#[from] cpp_demangle::error::Error),
 }

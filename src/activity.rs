@@ -7,35 +7,129 @@ use std::{
 
 use cudarc::cupti::{result as cupti, sys};
 use strum::FromRepr;
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::error::CuptirError;
 
-// Same constants as used in cuda/extras/CUPTI/samples/common/helper_cupti_activity.h
-const CUPTI_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+/// Default CUPTI buffer size.
+///
+/// CUPTI docs recommended this to be between 1 and 10 MiB.
+const CUPTI_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+/// Default CUPTI buffer alignment.
 const CUPTI_BUFFER_ALIGN: usize = 8;
 
-/// Type of function used to handle a [Record].
-pub type RecordHandler =
-    dyn Fn(Record) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync;
+/// A buffer with activity records.
+#[derive(Debug, Default)]
+pub struct RecordBuffer {
+    /// Pointer to the raw bytes.
+    ptr: *mut u8,
+    /// The size of the allocation.
+    size: usize,
+    /// The number of valid bytes within the buffer.
+    valid_size: usize,
+}
 
-/// Because the buffer complete callback doesn't have a way of passing custom data,
-/// we need something global to hold on to the Rust callback for record processing.
-pub(crate) static RECORD_HANDLER: OnceLock<Box<RecordHandler>> = OnceLock::new();
+impl RecordBuffer {
+    /// Attempt to construct a new RecordBuffer.
+    ///
+    /// If the supplied `ptr` is a nullptr, this function will return an error.
+    fn try_new(ptr: *mut u8, size: usize, valid_size: usize) -> Result<Self, CuptirError> {
+        if ptr.is_null() {
+            Err(CuptirError::NullPointer)
+        } else {
+            Ok(Self {
+                ptr,
+                size,
+                valid_size,
+            })
+        }
+    }
+}
+
+impl Drop for RecordBuffer {
+    fn drop(&mut self) {
+        let layout = Layout::from_size_align(self.size, CUPTI_BUFFER_ALIGN).unwrap();
+        unsafe {
+            dealloc(self.ptr, layout);
+        }
+    }
+}
+
+impl IntoIterator for RecordBuffer {
+    type Item = Result<Record, CuptirError>;
+    type IntoIter = RecordBufferIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        RecordBufferIterator {
+            buffer: self,
+            current_record_ptr: std::ptr::null_mut(),
+        }
+    }
+}
+
+pub struct RecordBufferIterator {
+    buffer: RecordBuffer,
+    current_record_ptr: *mut sys::CUpti_Activity,
+}
+
+impl Iterator for RecordBufferIterator {
+    type Item = Result<Record, CuptirError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Safety: the buffer can only be constructed with a non-null ptr, plus CUPTI
+        // would return a graceful error if it were null.
+        let result = unsafe {
+            cupti::activity::get_next_record(
+                self.buffer.ptr,
+                self.buffer.valid_size,
+                &mut self.current_record_ptr,
+            )
+        };
+        if let Err(error) = &result {
+            match error.0 {
+                sys::CUptiResult::CUPTI_ERROR_MAX_LIMIT_REACHED
+                | sys::CUptiResult::CUPTI_ERROR_INVALID_KIND => None,
+                sys::CUptiResult::CUPTI_ERROR_NOT_INITIALIZED => {
+                    warn!("cupti is not initialized");
+                    None
+                }
+                _ => {
+                    warn!("unexpected error in record buffer iterator: {error:?}");
+                    None
+                }
+            }
+        } else if !self.current_record_ptr.is_null() {
+            Some(unsafe { Record::try_from_record_ptr(self.current_record_ptr) })
+        } else {
+            None
+        }
+    }
+}
+
+/// Type of function callback used to handle single [Record]s.
+pub type RecordBufferCallback =
+    dyn Fn(RecordBuffer) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync;
+
+/// Globally accessible callback to handle activity record buffers.
+///
+/// Because the buffer complete callback doesn't have a way of passing custom data, e.g.
+/// a reference to the Context, this is needed to get to the Rust callback for  record
+/// processing.
+pub(crate) static RECORD_BUFFER_CALLBACK: OnceLock<Box<RecordBufferCallback>> = OnceLock::new();
 
 /// Sets the activity record handler. This can be only called once.
-pub(crate) fn set_record_handler(
-    activity_record_handler: Box<RecordHandler>,
+pub(crate) fn set_record_buffer_handler(
+    activity_record_buffer_handler: Box<RecordBufferCallback>,
 ) -> Result<(), CuptirError> {
-    RECORD_HANDLER
-        .set(activity_record_handler)
-        .map_err(|_| CuptirError::AcivityRecordHandler("can only be set once".into()))
+    RECORD_BUFFER_CALLBACK
+        .set(activity_record_buffer_handler)
+        .map_err(|_| CuptirError::ActivityRecordBufferHandler("can only be set once".into()))
 }
 
 /// Calls the global record handler function if it is installed.
-fn handle_record(record: Record) -> Result<(), CuptirError> {
-    if let Some(handler) = RECORD_HANDLER.get() {
-        handler(record).map_err(|e| CuptirError::AcivityRecordHandler(e.to_string()))
+fn handle_record_buffer(record_buffer: RecordBuffer) -> Result<(), CuptirError> {
+    if let Some(handler) = RECORD_BUFFER_CALLBACK.get() {
+        handler(record_buffer).map_err(|e| CuptirError::ActivityRecordBufferHandler(e.to_string()))
     } else {
         Ok(())
     }
@@ -103,7 +197,82 @@ pub enum Kind {
 
 impl From<Kind> for sys::CUpti_ActivityKind {
     fn from(value: Kind) -> Self {
-        unsafe { std::mem::transmute(value) }
+        use sys::CUpti_ActivityKind;
+        match value {
+            Kind::Memcpy => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY,
+            Kind::Memset => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMSET,
+            Kind::Kernel => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_KERNEL,
+            Kind::Driver => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DRIVER,
+            Kind::Runtime => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_RUNTIME,
+            Kind::Event => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_EVENT,
+            Kind::Metric => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_METRIC,
+            Kind::Device => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE,
+            Kind::Context => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONTEXT,
+            Kind::ConcurrentKernel => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
+            Kind::Name => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_NAME,
+            Kind::Marker => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MARKER,
+            Kind::MarkerData => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MARKER_DATA,
+            Kind::SourceLocator => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_SOURCE_LOCATOR,
+            Kind::GlobalAccess => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_GLOBAL_ACCESS,
+            Kind::Branch => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_BRANCH,
+            Kind::Overhead => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OVERHEAD,
+            Kind::CdpKernel => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CDP_KERNEL,
+            Kind::Preemption => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PREEMPTION,
+            Kind::Environment => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_ENVIRONMENT,
+            Kind::EventInstance => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_EVENT_INSTANCE,
+            Kind::Memcpy2 => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY2,
+            Kind::MetricInstance => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_METRIC_INSTANCE,
+            Kind::InstructionExecution => {
+                CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTRUCTION_EXECUTION
+            }
+            Kind::UnifiedMemoryCounter => {
+                CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER
+            }
+            Kind::Function => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_FUNCTION,
+            Kind::Module => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MODULE,
+            Kind::DeviceAttribute => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE_ATTRIBUTE,
+            Kind::SharedAccess => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_SHARED_ACCESS,
+            Kind::PcSampling => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PC_SAMPLING,
+            Kind::PcSamplingRecordInfo => {
+                CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PC_SAMPLING_RECORD_INFO
+            }
+            Kind::InstructionCorrelation => {
+                CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTRUCTION_CORRELATION
+            }
+            Kind::OpenaccData => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENACC_DATA,
+            Kind::OpenaccLaunch => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENACC_LAUNCH,
+            Kind::OpenaccOther => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENACC_OTHER,
+            Kind::CudaEvent => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CUDA_EVENT,
+            Kind::Stream => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_STREAM,
+            Kind::Synchronization => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_SYNCHRONIZATION,
+            Kind::ExternalCorrelation => {
+                CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION
+            }
+            Kind::Nvlink => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_NVLINK,
+            Kind::InstantaneousEvent => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_EVENT,
+            Kind::InstantaneousEventInstance => {
+                CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_EVENT_INSTANCE
+            }
+            Kind::InstantaneousMetric => {
+                CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_METRIC
+            }
+            Kind::InstantaneousMetricInstance => {
+                CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_METRIC_INSTANCE
+            }
+            Kind::Memory => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY,
+            Kind::Pcie => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PCIE,
+            Kind::Openmp => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENMP,
+            Kind::InternalLaunchApi => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INTERNAL_LAUNCH_API,
+            Kind::Memory2 => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY2,
+            Kind::MemoryPool => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY_POOL,
+            Kind::GraphTrace => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_GRAPH_TRACE,
+            Kind::Jit => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_JIT,
+            Kind::DeviceGraphTrace => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE_GRAPH_TRACE,
+            Kind::MemDecompress => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEM_DECOMPRESS,
+            Kind::ConfidentialComputeRotation => {
+                CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONFIDENTIAL_COMPUTE_ROTATION
+            }
+        }
     }
 }
 
@@ -258,15 +427,14 @@ pub enum ChannelType {
 impl TryFrom<sys::CUpti_ChannelType> for ChannelType {
     type Error = CuptirError;
 
+    #[rustfmt::skip]
     fn try_from(value: sys::CUpti_ChannelType) -> Result<Self, Self::Error> {
         match value {
-            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_COMPUTE => Ok(Self::Compute),
+            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_COMPUTE      => Ok(Self::Compute),
             sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_ASYNC_MEMCPY => Ok(Self::AsyncMemcpy),
-            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_DECOMP => Ok(Self::Decomp),
-            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_INVALID
-            | sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_FORCE_INT => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
+            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_DECOMP       => Ok(Self::Decomp),
+            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_INVALID      |
+            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_FORCE_INT    => Err(CuptirError::SentinelEnum(value as u32))
         }
     }
 }
@@ -305,6 +473,7 @@ pub enum MemoryOperationType {
 impl TryFrom<sys::CUpti_ActivityMemoryOperationType> for MemoryOperationType {
     type Error = CuptirError;
 
+    #[rustfmt::skip]
     fn try_from(value: sys::CUpti_ActivityMemoryOperationType) -> Result<Self, Self::Error> {
         match value {
             sys::CUpti_ActivityMemoryOperationType::CUPTI_ACTIVITY_MEMORY_OPERATION_TYPE_ALLOCATION => Ok(MemoryOperationType::Allocation),
@@ -328,34 +497,19 @@ pub enum MemoryKind {
 }
 
 impl MemoryKind {
+    #[rustfmt::skip]
     fn from_sys(value: sys::CUpti_ActivityMemoryKind) -> Result<Option<Self>, CuptirError> {
-        match value {
-            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_UNKNOWN => Ok(None),
-            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_PAGEABLE => {
-                Ok(Some(MemoryKind::Pageable))
-            }
-            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_PINNED => {
-                Ok(Some(MemoryKind::Pinned))
-            }
-            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_DEVICE => {
-                Ok(Some(MemoryKind::Device))
-            }
-            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_ARRAY => {
-                Ok(Some(MemoryKind::Array))
-            }
-            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_MANAGED => {
-                Ok(Some(MemoryKind::Managed))
-            }
-            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_DEVICE_STATIC => {
-                Ok(Some(MemoryKind::DeviceStatic))
-            }
-            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_MANAGED_STATIC => {
-                Ok(Some(MemoryKind::ManagedStatic))
-            }
-            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_FORCE_INT => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
-        }
+        Ok(match value {
+            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_UNKNOWN        => None,
+            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_PAGEABLE       => Some(MemoryKind::Pageable),
+            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_PINNED         => Some(MemoryKind::Pinned),
+            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_DEVICE         => Some(MemoryKind::Device),
+            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_ARRAY          => Some(MemoryKind::Array),
+            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_MANAGED        => Some(MemoryKind::Managed),
+            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_DEVICE_STATIC  => Some(MemoryKind::DeviceStatic),
+            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_MANAGED_STATIC => Some(MemoryKind::ManagedStatic),
+            sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_FORCE_INT      => Err(CuptirError::SentinelEnum(value as u32))?,
+        })
     }
 }
 
@@ -391,6 +545,7 @@ pub enum MemoryPoolOperationType {
 impl TryFrom<sys::CUpti_ActivityMemoryPoolOperationType> for MemoryPoolOperationType {
     type Error = CuptirError;
 
+    #[rustfmt::skip]
     fn try_from(value: sys::CUpti_ActivityMemoryPoolOperationType) -> Result<Self, Self::Error> {
         match value {
             sys::CUpti_ActivityMemoryPoolOperationType::CUPTI_ACTIVITY_MEMORY_POOL_OPERATION_TYPE_CREATED   => Ok(MemoryPoolOperationType::Created),
@@ -412,18 +567,13 @@ pub enum MemoryPoolType {
 impl TryFrom<sys::CUpti_ActivityMemoryPoolType> for MemoryPoolType {
     type Error = CuptirError;
 
+    #[rustfmt::skip]
     fn try_from(value: sys::CUpti_ActivityMemoryPoolType) -> Result<Self, Self::Error> {
         match value {
-            sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_LOCAL => {
-                Ok(MemoryPoolType::Local)
-            }
-            sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_IMPORTED => {
-                Ok(MemoryPoolType::Imported)
-            }
-            sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_FORCE_INT
-            | sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_INVALID => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
+            sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_LOCAL     => { Ok(MemoryPoolType::Local) }
+            sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_IMPORTED  => { Ok(MemoryPoolType::Imported) }
+            sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_FORCE_INT |
+            sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_INVALID   => { Err(CuptirError::SentinelEnum(value as u32)) }
         }
     }
 }
@@ -663,33 +813,9 @@ pub(crate) extern "C" fn buffer_complete_callback(
     valid_size: usize,
 ) {
     trace!("buffer complete - stream id: {stream_id}, size: {size}, valid: {valid_size}");
-
-    if let Err(error) = process_buffer(buffer, valid_size) {
-        trace!("error processing activity buffer: {error}");
+    if let Err(error) =
+        RecordBuffer::try_new(buffer, size, valid_size).and_then(handle_record_buffer)
+    {
+        warn!("processing activity buffer failed: {error}");
     }
-
-    let layout = Layout::from_size_align(CUPTI_BUFFER_SIZE, CUPTI_BUFFER_ALIGN).unwrap();
-    unsafe {
-        dealloc(buffer, layout);
-    }
-}
-
-fn process_buffer(buffer_ptr: *mut u8, num_valid_bytes: usize) -> Result<(), CuptirError> {
-    let mut record: *mut sys::CUpti_Activity = std::ptr::null_mut();
-
-    loop {
-        let result =
-            unsafe { cupti::activity::get_next_record(buffer_ptr, num_valid_bytes, &mut record) };
-        if let Err(error) = result {
-            match error.0 {
-                sys::CUptiResult::CUPTI_ERROR_MAX_LIMIT_REACHED => break,
-                sys::CUptiResult::CUPTI_ERROR_INVALID_KIND => break,
-                _ => result?,
-            };
-        } else {
-            handle_record(unsafe { Record::try_from_record_ptr(record) }?)?;
-        }
-    }
-
-    Ok(())
 }

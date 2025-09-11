@@ -45,7 +45,7 @@ impl Context {
 #[derive(Default)]
 pub struct ContextBuilder {
     enabled_activity_kinds: HashSet<activity::Kind>,
-    activity_record_handler: Option<Box<activity::RecordHandler>>,
+    activity_record_buffer_handler: Option<Box<activity::RecordBufferCallback>>,
     activity_latency_timestamps: bool,
 }
 
@@ -62,15 +62,18 @@ impl ContextBuilder {
         self
     }
 
-    /// Supply the activity record handler function.
-    pub fn with_activity_record_handler<F>(mut self, handler: F) -> Self
+    /// Set the activity record buffer callback function.
+    ///
+    /// The callback function should return as quickly as possible to minimize profiling
+    /// overhead.
+    pub fn with_activity_record_buffer_callback<F>(mut self, handler: F) -> Self
     where
-        F: Fn(activity::Record) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+        F: Fn(activity::RecordBuffer) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
             + Send
             + Sync
             + 'static,
     {
-        self.activity_record_handler = Some(Box::new(handler));
+        self.activity_record_buffer_handler = Some(Box::new(handler));
         self
     }
 
@@ -85,8 +88,8 @@ impl ContextBuilder {
 
     /// Build the [Context].
     ///
-    /// This function can fail if there is another Context or another type of CUPTI
-    /// subscriber, such as NSight Systems or the DCGM.
+    /// This function can fail if there is another Context or any other type of CUPTI
+    /// subscriber.
     pub fn build(self) -> Result<Context, CuptirError> {
         let mut context = Context {
             enabled_activity_kinds: self.enabled_activity_kinds.into_iter().collect(),
@@ -108,9 +111,9 @@ impl ContextBuilder {
         }
 
         // Set the activity record handler, if any.
-        if let Some(activity_record_handler) = self.activity_record_handler {
+        if let Some(activity_record_buffer_handler) = self.activity_record_buffer_handler {
             trace!("setting record handler");
-            activity::set_record_handler(activity_record_handler)?;
+            activity::set_record_buffer_handler(activity_record_buffer_handler)?;
         }
 
         trace!("registering activity buffer callbacks");
@@ -203,14 +206,18 @@ mod tests {
 
     #[test]
     #[serial]
-    fn activity_record_handler() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn activity_record_buffer_handler() -> std::result::Result<(), Box<dyn std::error::Error>> {
         use std::sync::{Arc, Mutex};
         let records: Arc<Mutex<Vec<activity::Record>>> = Arc::new(Mutex::new(vec![]));
 
         let recs_cb = Arc::clone(&records);
         let context = Context::builder()
-            .with_activity_record_handler(move |record| {
-                recs_cb.lock().unwrap().push(record);
+            .with_activity_record_buffer_callback(move |buffer| {
+                recs_cb.lock().unwrap().extend(
+                    buffer
+                        .into_iter()
+                        .filter_map(|maybe_record| maybe_record.ok()),
+                );
                 Ok(())
             })
             .with_activity_kind(activity::Kind::Driver)
@@ -218,8 +225,7 @@ mod tests {
 
         // Init the driver and get the count. This should result in exactly one event.
         cudarc::driver::result::init()?;
-        let device_count = cudarc::driver::result::device::get_count()?;
-        println!("Device count: {device_count}");
+        let _ = cudarc::driver::result::device::get_count()?;
 
         drop(context);
 
