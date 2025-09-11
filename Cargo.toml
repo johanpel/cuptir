@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 strum = { version = "0.27", features = ["derive"] }
 cpp_demangle = "0.4.4"
-cudarc = { git = "https://github.com/johanpel/cudarc.git", branch = "cupti", default-features = false, features = [
+cudarc = { git = "https://github.com/johanpel/cudarc.git", branch = "cupti_nvrtc_optional", default-features = false, features = [
     "cuda-version-from-build-system",
     "dynamic-linking",
     "cupti",

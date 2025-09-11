@@ -216,7 +216,7 @@ dependencies = [
 [[package]]
 name = "cudarc"
 version = "0.17.3"
-source = "git+https://github.com/johanpel/cudarc.git?branch=cupti#7457ec90dca400026b0b9ffb8d372368ebdbaefa"
+source = "git+https://github.com/johanpel/cudarc.git?branch=cupti_nvrtc_optional#8f8720ab5208e3744004fb2408c708f7d39fe68d"
 dependencies = [
  "libloading",
 ]
