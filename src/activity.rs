@@ -198,7 +198,7 @@ pub enum Kind {
     Jit = 52,
     DeviceGraphTrace = 53,
     MemDecompress = 54,
-    ConfidentialComputeRotation = 55,
+    // ConfidentialComputeRotation = 55,
 }
 
 impl From<Kind> for sys::CUpti_ActivityKind {
@@ -260,7 +260,7 @@ impl From<Kind> for sys::CUpti_ActivityKind {
             Kind::Jit                         => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_JIT,
             Kind::DeviceGraphTrace            => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE_GRAPH_TRACE,
             Kind::MemDecompress               => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEM_DECOMPRESS,
-            Kind::ConfidentialComputeRotation => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONFIDENTIAL_COMPUTE_ROTATION
+            // Kind::ConfidentialComputeRotation => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONFIDENTIAL_COMPUTE_ROTATION
         }
     }
 }
