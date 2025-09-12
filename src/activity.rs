@@ -1,7 +1,5 @@
 use std::{
     alloc::{Layout, alloc, dealloc},
-    ffi::CStr,
-    ptr::NonNull,
     sync::OnceLock,
 };
 
@@ -11,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use strum::FromRepr;
 use tracing::{trace, warn};
 
-use crate::error::CuptirError;
+use crate::{
+    callback::callback_name, error::CuptirError, try_demangle_from_ffi, try_string_from_ffi,
+};
 
 /// Default CUPTI buffer size.
 ///
@@ -108,8 +108,8 @@ impl Iterator for RecordBufferIterator {
     }
 }
 
-/// Type of function callback used to handle single [Record]s.
-pub type RecordBufferCallback =
+/// Type of callback function used to handle [RecordBuffer]s.
+pub type RecordBufferHandlerFn =
     dyn Fn(RecordBuffer) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync;
 
 /// Globally accessible callback to handle activity record buffers.
@@ -117,22 +117,23 @@ pub type RecordBufferCallback =
 /// Because the buffer complete callback doesn't have a way of passing custom data, e.g.
 /// a reference to the Context, this is needed to get to the Rust callback for  record
 /// processing.
-pub(crate) static RECORD_BUFFER_CALLBACK: OnceLock<Box<RecordBufferCallback>> = OnceLock::new();
+pub(crate) static RECORD_BUFFER_HANDLER: OnceLock<Box<RecordBufferHandlerFn>> = OnceLock::new();
 
 /// Sets the activity record handler. This can be only called once.
 pub(crate) fn set_record_buffer_handler(
-    activity_record_buffer_handler: Box<RecordBufferCallback>,
+    activity_record_buffer_handler: Box<RecordBufferHandlerFn>,
 ) -> Result<(), CuptirError> {
-    RECORD_BUFFER_CALLBACK
+    RECORD_BUFFER_HANDLER
         .set(activity_record_buffer_handler)
         .map_err(|_| CuptirError::ActivityRecordBufferHandler("can only be set once".into()))
 }
 
 /// Calls the global record handler function if it is installed.
 fn handle_record_buffer(record_buffer: RecordBuffer) -> Result<(), CuptirError> {
-    if let Some(handler) = RECORD_BUFFER_CALLBACK.get() {
+    if let Some(handler) = RECORD_BUFFER_HANDLER.get() {
         handler(record_buffer).map_err(|e| CuptirError::ActivityRecordBufferHandler(e.to_string()))
     } else {
+        warn!("activity records received, but no callback is installed");
         Ok(())
     }
 }
@@ -204,63 +205,63 @@ pub enum Kind {
 impl From<Kind> for sys::CUpti_ActivityKind {
     #[rustfmt::skip]
     fn from(value: Kind) -> Self {
-        use sys::CUpti_ActivityKind;
+        use sys::CUpti_ActivityKind as c;
         match value {
-            Kind::Memcpy                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY,
-            Kind::Memset                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMSET,
-            Kind::Kernel                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_KERNEL,
-            Kind::Driver                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DRIVER,
-            Kind::Runtime                     => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_RUNTIME,
-            Kind::Event                       => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_EVENT,
-            Kind::Metric                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_METRIC,
-            Kind::Device                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE,
-            Kind::Context                     => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONTEXT,
-            Kind::ConcurrentKernel            => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
-            Kind::Name                        => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_NAME,
-            Kind::Marker                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MARKER,
-            Kind::MarkerData                  => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MARKER_DATA,
-            Kind::SourceLocator               => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_SOURCE_LOCATOR,
-            Kind::GlobalAccess                => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_GLOBAL_ACCESS,
-            Kind::Branch                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_BRANCH,
-            Kind::Overhead                    => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OVERHEAD,
-            Kind::CdpKernel                   => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CDP_KERNEL,
-            Kind::Preemption                  => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PREEMPTION,
-            Kind::Environment                 => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_ENVIRONMENT,
-            Kind::EventInstance               => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_EVENT_INSTANCE,
-            Kind::Memcpy2                     => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY2,
-            Kind::MetricInstance              => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_METRIC_INSTANCE,
-            Kind::InstructionExecution        => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTRUCTION_EXECUTION,
-            Kind::UnifiedMemoryCounter        => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER,
-            Kind::Function                    => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_FUNCTION,
-            Kind::Module                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MODULE,
-            Kind::DeviceAttribute             => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE_ATTRIBUTE,
-            Kind::SharedAccess                => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_SHARED_ACCESS,
-            Kind::PcSampling                  => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PC_SAMPLING,
-            Kind::PcSamplingRecordInfo        => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PC_SAMPLING_RECORD_INFO,
-            Kind::InstructionCorrelation      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTRUCTION_CORRELATION,
-            Kind::OpenaccData                 => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENACC_DATA,
-            Kind::OpenaccLaunch               => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENACC_LAUNCH,
-            Kind::OpenaccOther                => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENACC_OTHER,
-            Kind::CudaEvent                   => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CUDA_EVENT,
-            Kind::Stream                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_STREAM,
-            Kind::Synchronization             => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_SYNCHRONIZATION,
-            Kind::ExternalCorrelation         => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION,
-            Kind::Nvlink                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_NVLINK,
-            Kind::InstantaneousEvent          => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_EVENT,
-            Kind::InstantaneousEventInstance  => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_EVENT_INSTANCE,
-            Kind::InstantaneousMetric         => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_METRIC,
-            Kind::InstantaneousMetricInstance => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_METRIC_INSTANCE,
-            Kind::Memory                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY,
-            Kind::Pcie                        => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PCIE,
-            Kind::Openmp                      => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENMP,
-            Kind::InternalLaunchApi           => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INTERNAL_LAUNCH_API,
-            Kind::Memory2                     => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY2,
-            Kind::MemoryPool                  => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY_POOL,
-            Kind::GraphTrace                  => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_GRAPH_TRACE,
-            Kind::Jit                         => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_JIT,
-            Kind::DeviceGraphTrace            => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE_GRAPH_TRACE,
-            Kind::MemDecompress               => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEM_DECOMPRESS,
-            // Kind::ConfidentialComputeRotation => CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONFIDENTIAL_COMPUTE_ROTATION
+            Kind::Memcpy                      => c::CUPTI_ACTIVITY_KIND_MEMCPY,
+            Kind::Memset                      => c::CUPTI_ACTIVITY_KIND_MEMSET,
+            Kind::Kernel                      => c::CUPTI_ACTIVITY_KIND_KERNEL,
+            Kind::Driver                      => c::CUPTI_ACTIVITY_KIND_DRIVER,
+            Kind::Runtime                     => c::CUPTI_ACTIVITY_KIND_RUNTIME,
+            Kind::Event                       => c::CUPTI_ACTIVITY_KIND_EVENT,
+            Kind::Metric                      => c::CUPTI_ACTIVITY_KIND_METRIC,
+            Kind::Device                      => c::CUPTI_ACTIVITY_KIND_DEVICE,
+            Kind::Context                     => c::CUPTI_ACTIVITY_KIND_CONTEXT,
+            Kind::ConcurrentKernel            => c::CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
+            Kind::Name                        => c::CUPTI_ACTIVITY_KIND_NAME,
+            Kind::Marker                      => c::CUPTI_ACTIVITY_KIND_MARKER,
+            Kind::MarkerData                  => c::CUPTI_ACTIVITY_KIND_MARKER_DATA,
+            Kind::SourceLocator               => c::CUPTI_ACTIVITY_KIND_SOURCE_LOCATOR,
+            Kind::GlobalAccess                => c::CUPTI_ACTIVITY_KIND_GLOBAL_ACCESS,
+            Kind::Branch                      => c::CUPTI_ACTIVITY_KIND_BRANCH,
+            Kind::Overhead                    => c::CUPTI_ACTIVITY_KIND_OVERHEAD,
+            Kind::CdpKernel                   => c::CUPTI_ACTIVITY_KIND_CDP_KERNEL,
+            Kind::Preemption                  => c::CUPTI_ACTIVITY_KIND_PREEMPTION,
+            Kind::Environment                 => c::CUPTI_ACTIVITY_KIND_ENVIRONMENT,
+            Kind::EventInstance               => c::CUPTI_ACTIVITY_KIND_EVENT_INSTANCE,
+            Kind::Memcpy2                     => c::CUPTI_ACTIVITY_KIND_MEMCPY2,
+            Kind::MetricInstance              => c::CUPTI_ACTIVITY_KIND_METRIC_INSTANCE,
+            Kind::InstructionExecution        => c::CUPTI_ACTIVITY_KIND_INSTRUCTION_EXECUTION,
+            Kind::UnifiedMemoryCounter        => c::CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER,
+            Kind::Function                    => c::CUPTI_ACTIVITY_KIND_FUNCTION,
+            Kind::Module                      => c::CUPTI_ACTIVITY_KIND_MODULE,
+            Kind::DeviceAttribute             => c::CUPTI_ACTIVITY_KIND_DEVICE_ATTRIBUTE,
+            Kind::SharedAccess                => c::CUPTI_ACTIVITY_KIND_SHARED_ACCESS,
+            Kind::PcSampling                  => c::CUPTI_ACTIVITY_KIND_PC_SAMPLING,
+            Kind::PcSamplingRecordInfo        => c::CUPTI_ACTIVITY_KIND_PC_SAMPLING_RECORD_INFO,
+            Kind::InstructionCorrelation      => c::CUPTI_ACTIVITY_KIND_INSTRUCTION_CORRELATION,
+            Kind::OpenaccData                 => c::CUPTI_ACTIVITY_KIND_OPENACC_DATA,
+            Kind::OpenaccLaunch               => c::CUPTI_ACTIVITY_KIND_OPENACC_LAUNCH,
+            Kind::OpenaccOther                => c::CUPTI_ACTIVITY_KIND_OPENACC_OTHER,
+            Kind::CudaEvent                   => c::CUPTI_ACTIVITY_KIND_CUDA_EVENT,
+            Kind::Stream                      => c::CUPTI_ACTIVITY_KIND_STREAM,
+            Kind::Synchronization             => c::CUPTI_ACTIVITY_KIND_SYNCHRONIZATION,
+            Kind::ExternalCorrelation         => c::CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION,
+            Kind::Nvlink                      => c::CUPTI_ACTIVITY_KIND_NVLINK,
+            Kind::InstantaneousEvent          => c::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_EVENT,
+            Kind::InstantaneousEventInstance  => c::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_EVENT_INSTANCE,
+            Kind::InstantaneousMetric         => c::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_METRIC,
+            Kind::InstantaneousMetricInstance => c::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_METRIC_INSTANCE,
+            Kind::Memory                      => c::CUPTI_ACTIVITY_KIND_MEMORY,
+            Kind::Pcie                        => c::CUPTI_ACTIVITY_KIND_PCIE,
+            Kind::Openmp                      => c::CUPTI_ACTIVITY_KIND_OPENMP,
+            Kind::InternalLaunchApi           => c::CUPTI_ACTIVITY_KIND_INTERNAL_LAUNCH_API,
+            Kind::Memory2                     => c::CUPTI_ACTIVITY_KIND_MEMORY2,
+            Kind::MemoryPool                  => c::CUPTI_ACTIVITY_KIND_MEMORY_POOL,
+            Kind::GraphTrace                  => c::CUPTI_ACTIVITY_KIND_GRAPH_TRACE,
+            Kind::Jit                         => c::CUPTI_ACTIVITY_KIND_JIT,
+            Kind::DeviceGraphTrace            => c::CUPTI_ACTIVITY_KIND_DEVICE_GRAPH_TRACE,
+            Kind::MemDecompress               => c::CUPTI_ACTIVITY_KIND_MEM_DECOMPRESS,
+            // Kind::ConfidentialComputeRotation => c::CUPTI_ACTIVITY_KIND_CONFIDENTIAL_COMPUTE_ROTATION
         }
     }
 }
@@ -282,22 +283,6 @@ impl TryFrom<sys::CUpti_ActivityKind> for Kind {
 
 /// A time stamp
 pub type Timestamp = u64;
-
-// Obtain the name of a callback within a specific domain.
-fn callback_name(domain: sys::CUpti_CallbackDomain, id: u32) -> Result<String, CuptirError> {
-    let mut name_ptr: *const ::std::os::raw::c_char = std::ptr::null_mut();
-    unsafe {
-        sys::cuptiGetCallbackName(domain, id, &mut name_ptr);
-    }
-    let name = if !name_ptr.is_null() {
-        unsafe { CStr::from_ptr(name_ptr) }
-            .to_string_lossy()
-            .into_owned()
-    } else {
-        "<unnamed>".to_string()
-    };
-    Ok(name)
-}
 
 pub type ProcessId = u32;
 pub type ThreadId = u32;
@@ -419,7 +404,7 @@ pub struct KernelRecord {
     pub local_memory_total: u32,
     pub correlation_id: u32,
     pub grid_id: i64,
-    pub name: String,
+    pub name: Option<String>,
     pub queued: Option<Timestamp>,
     pub submitted: Option<Timestamp>,
     pub launch_type: u8,
@@ -447,8 +432,6 @@ impl TryFrom<&sys::CUpti_ActivityKernel9> for KernelRecord {
     type Error = CuptirError;
 
     fn try_from(value: &sys::CUpti_ActivityKernel9) -> Result<Self, Self::Error> {
-        let kernel_name = unsafe { CStr::from_ptr(value.name) };
-        let kernel_name_demangled = cpp_demangle::Symbol::new(kernel_name.to_bytes())?.to_string();
         Ok(KernelRecord {
             shared_memory_config: value.sharedMemoryConfig,
             registers_per_thread: value.registersPerThread,
@@ -476,7 +459,7 @@ impl TryFrom<&sys::CUpti_ActivityKernel9> for KernelRecord {
             local_memory_total: value.localMemoryTotal,
             correlation_id: value.correlationId,
             grid_id: value.gridId,
-            name: kernel_name_demangled,
+            name: try_demangle_from_ffi(value.name),
             queued: if value.queued == sys::CUPTI_TIMESTAMP_UNKNOWN as u64 {
                 None
             } else {
@@ -663,23 +646,6 @@ impl TryFrom<&sys::CUpti_ActivityMemory4> for MemoryRecord {
     type Error = CuptirError;
 
     fn try_from(value: &sys::CUpti_ActivityMemory4) -> Result<Self, Self::Error> {
-        let name = NonNull::new(value.name as *mut _)
-            .map(|p| {
-                unsafe { CStr::from_ptr(p.as_ptr()) }
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .map(|name| {
-                cpp_demangle::Symbol::new(name.as_str())
-                    .map(|symbol| symbol.to_string())
-                    .ok()
-                    .unwrap_or(name)
-            });
-        let source = NonNull::new(value.source as *mut _).map(|p| {
-            unsafe { CStr::from_ptr(p.as_ptr()) }
-                .to_string_lossy()
-                .into_owned()
-        });
         Ok(MemoryRecord {
             memory_operation_type: value.memoryOperationType.try_into()?,
             memory_kind: MemoryKind::try_from_sys(value.memoryKind)?,
@@ -692,10 +658,10 @@ impl TryFrom<&sys::CUpti_ActivityMemory4> for MemoryRecord {
             device_id: value.deviceId,
             context_id: value.contextId,
             stream_id: value.streamId,
-            name,
+            name: try_demangle_from_ffi(value.name),
             is_async: value.isAsync,
             pad1: value.pad1,
-            source,
+            source: try_string_from_ffi(value.source),
         })
     }
 }

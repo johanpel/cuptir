@@ -1,13 +1,13 @@
-#![doc = include_str!("../README.md")]
+use core::ffi;
+use std::{collections::HashSet, ffi::CStr, ptr::NonNull};
 
-use std::collections::HashSet;
-
-use cudarc::{cupti::result as cupti, cupti::sys as ffi};
+use cudarc::{cupti::result as cupti, cupti::sys};
 use tracing::trace;
 
 use crate::error::CuptirError;
 
 pub mod activity;
+pub mod callback;
 pub mod error;
 
 /// Global context for cuptir.
@@ -17,11 +17,16 @@ pub mod error;
 ///
 /// This [Context] should be created before any other CUDA interactions take place in
 /// the program.
+// TODO: probably split this out over multiple contexts, one per CUPTI module
 #[derive(Debug)]
 #[repr(C)]
 pub struct Context {
+    // Activity API stuff
     enabled_activity_kinds: Vec<activity::Kind>,
-    ffi_subscriber_handle: ffi::CUpti_SubscriberHandle,
+
+    // Callback API stuff
+    enabled_callback_domains: Vec<callback::Domain>,
+    sys_subscriber_handle: sys::CUpti_SubscriberHandle,
     user_data: *mut u8, // User data on the heap, TODO make generic
 }
 
@@ -35,7 +40,7 @@ impl Context {
     pub fn flush_activity() -> Result<(), CuptirError> {
         trace!("flushing activity buffer");
         cupti::activity::flush_all(
-            ffi::CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_FLUSH_FORCED as u32,
+            sys::CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_FLUSH_FORCED as u32,
         )?;
         Ok(())
     }
@@ -45,28 +50,25 @@ impl Context {
 #[derive(Default)]
 pub struct ContextBuilder {
     enabled_activity_kinds: HashSet<activity::Kind>,
-    activity_record_buffer_handler: Option<Box<activity::RecordBufferCallback>>,
+    activity_record_buffer_handler: Option<Box<activity::RecordBufferHandlerFn>>,
     activity_latency_timestamps: bool,
+
+    enabled_callback_domains: HashSet<callback::Domain>,
+    callback_handler: Option<Box<callback::CallbackHandlerFn>>,
 }
 
 impl ContextBuilder {
-    /// Add the supplied activity kind to the set of activated activity kinds.
-    pub fn with_activity_kind(mut self, kind: activity::Kind) -> Self {
-        self.enabled_activity_kinds.insert(kind);
-        self
-    }
-
     /// Add the supplied activity kinds to the set of activated activity kinds.
     pub fn with_activity_kinds(mut self, kinds: impl IntoIterator<Item = activity::Kind>) -> Self {
         self.enabled_activity_kinds.extend(kinds);
         self
     }
 
-    /// Set the activity record buffer callback function.
+    /// Set the activity record buffer handler function.
     ///
-    /// The callback function should return as quickly as possible to minimize profiling
+    /// The handler function should return as quickly as possible to minimize profiling
     /// overhead.
-    pub fn with_activity_record_buffer_callback<F>(mut self, handler: F) -> Self
+    pub fn with_activity_record_buffer_handler<F>(mut self, handler: F) -> Self
     where
         F: Fn(activity::RecordBuffer) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
             + Send
@@ -77,12 +79,36 @@ impl ContextBuilder {
         self
     }
 
-    /// Enable or disable latency timestamps (`queued` and `submitted`) for
+    /// Enable latency timestamps (`queued` and `submitted`) for
     /// [activity::KernelRecord] event records.
     ///
     /// Disabled by default.
-    pub fn with_activity_latency_timestamps(mut self, enabled: bool) -> Self {
+    pub fn enable_activity_latency_timestamps(mut self, enabled: bool) -> Self {
         self.activity_latency_timestamps = enabled;
+        self
+    }
+
+    /// Add the supplied domains to the set of activated callback domains.
+    pub fn with_callback_domains(
+        mut self,
+        domains: impl IntoIterator<Item = callback::Domain>,
+    ) -> Self {
+        self.enabled_callback_domains.extend(domains);
+        self
+    }
+
+    /// Set the handler for the Callback API.
+    ///
+    /// The handler function should return as quickly as possible to minimize profiling
+    /// overhead.
+    pub fn with_callback_handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(callback::Callback) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.callback_handler = Some(Box::new(handler));
         self
     }
 
@@ -93,8 +119,10 @@ impl ContextBuilder {
     pub fn build(self) -> Result<Context, CuptirError> {
         let mut context = Context {
             enabled_activity_kinds: self.enabled_activity_kinds.into_iter().collect(),
-            ffi_subscriber_handle: std::ptr::null_mut(),
+            sys_subscriber_handle: std::ptr::null_mut(),
             user_data: std::ptr::null_mut(),
+
+            enabled_callback_domains: self.enabled_callback_domains.into_iter().collect(),
         };
 
         // Subscribe. This can fail if theres some other thing trying to use CUPTI
@@ -102,13 +130,49 @@ impl ContextBuilder {
         // doing anything else. So even if we don't use the callback API we still
         // need to pass a handler.
         trace!("subscribing context");
-        unsafe {
-            cupti::subscribe(
-                &mut context.ffi_subscriber_handle,
-                None,
-                context.user_data as *mut _,
-            )?;
+        if let Some(callback_handler) = self.callback_handler {
+            if context.enabled_callback_domains.is_empty() {
+                return Err(CuptirError::Builder(format!(
+                    "callback handler provided, but no domains were enabled"
+                )));
+            } else {
+                callback::set_callback_handler(callback_handler)?;
+                unsafe {
+                    cupti::subscribe(
+                        &mut context.sys_subscriber_handle,
+                        Some(callback::handler),
+                        context.user_data as *mut _,
+                    )?;
+                }
+            }
+        } else {
+            if !context.enabled_callback_domains.is_empty() {
+                return Err(CuptirError::Builder(format!(
+                    "callback domains {:?} are enabled, but no callback handler is set",
+                    context.enabled_callback_domains
+                )));
+            } else {
+                unsafe {
+                    cupti::subscribe(
+                        &mut context.sys_subscriber_handle,
+                        None,
+                        context.user_data as *mut _,
+                    )?;
+                }
+            }
         }
+
+        // Enable the callback domains
+        trace!(
+            "enabling callback domains: {:?}",
+            context.enabled_callback_domains
+        );
+        context
+            .enabled_callback_domains
+            .iter()
+            .try_for_each(|domain| unsafe {
+                cupti::enable_domain(1, context.sys_subscriber_handle, (*domain).into())
+            })?;
 
         // Set the activity record handler, if any.
         if let Some(activity_record_buffer_handler) = self.activity_record_buffer_handler {
@@ -116,16 +180,16 @@ impl ContextBuilder {
             activity::set_record_buffer_handler(activity_record_buffer_handler)?;
         }
 
+        if self.activity_latency_timestamps {
+            trace!("enabling latency timestamps");
+            cupti::activity::enable_latency_timestamps(1)?;
+        }
+
         trace!("registering activity buffer callbacks");
         cupti::activity::register_callbacks(
             Some(activity::buffer_requested_callback),
             Some(activity::buffer_complete_callback),
         )?;
-
-        if self.activity_latency_timestamps {
-            trace!("enabling latency timestamps");
-            cupti::activity::enable_latency_timestamps(1)?;
-        }
 
         trace!(
             "enabling activity kinds: {:?}",
@@ -158,9 +222,9 @@ impl Drop for Context {
             tracing::warn!("unable to disable CUPTI activity: {error}");
         }
 
-        if !self.ffi_subscriber_handle.is_null() {
+        if !self.sys_subscriber_handle.is_null() {
             trace!("unsubscribing context");
-            if let Err(error) = unsafe { cupti::unsubscribe(self.ffi_subscriber_handle) } {
+            if let Err(error) = unsafe { cupti::unsubscribe(self.sys_subscriber_handle) } {
                 tracing::warn!("unable to unsubscribe CUPTI client: {error}");
             }
         }
@@ -173,6 +237,26 @@ impl Drop for Context {
     }
 }
 
+// TODO: figure out whether we should deallocate ourselves across usages. Docs aren't
+// super clear on this.
+fn try_string_from_ffi(c_string: *const ffi::c_char) -> Option<String> {
+    NonNull::new(c_string as *mut _).map(|p| {
+        unsafe { CStr::from_ptr(p.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+// TODO: optimize
+fn try_demangle_from_ffi(c_string: *const ffi::c_char) -> Option<String> {
+    try_string_from_ffi(c_string).map(|string| {
+        cpp_demangle::Symbol::new(string.as_str())
+            .map(|symbol| symbol.to_string())
+            .ok()
+            .unwrap_or(string)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use serial_test::serial;
@@ -183,7 +267,7 @@ mod tests {
     #[serial]
     fn make_context() -> std::result::Result<(), CuptirError> {
         let _context = Context::builder()
-            .with_activity_kind(activity::Kind::ConcurrentKernel)
+            .with_activity_kinds([activity::Kind::ConcurrentKernel])
             .build()?;
         Ok(())
     }
@@ -199,7 +283,7 @@ mod tests {
         assert!(
             context1.unwrap_err()
                 == CuptirError::Cupti(cupti::CuptiError(
-                    ffi::CUptiResult::CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED
+                    sys::CUptiResult::CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED
                 ))
         );
     }
@@ -212,7 +296,7 @@ mod tests {
 
         let recs_cb = Arc::clone(&records);
         let context = Context::builder()
-            .with_activity_record_buffer_callback(move |buffer| {
+            .with_activity_record_buffer_handler(move |buffer| {
                 recs_cb.lock().unwrap().extend(
                     buffer
                         .into_iter()
@@ -220,7 +304,7 @@ mod tests {
                 );
                 Ok(())
             })
-            .with_activity_kind(activity::Kind::Driver)
+            .with_activity_kinds([activity::Kind::Driver])
             .build();
 
         // Init the driver and get the count. This should result in exactly one event.

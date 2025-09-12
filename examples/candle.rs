@@ -1,3 +1,4 @@
+use cuptir::callback;
 use tracing::level_filters::LevelFilter;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -6,7 +7,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(LevelFilter::TRACE)
         .init();
 
-    // Set up context and activate a callback:
+    // Set up context. Normally, the callbacks should aim to return as quickly as
+    // possible in order to keep the profiling overhead as low as possible. It is very
+    // likely a bad idea to do something similar to the below if you care about
+    // performance. Especially for the buffers, it is recommended to hand them off to
+    // some asynchronous processing logic.
     let _cuptir = cuptir::Context::builder()
         .with_activity_kinds([
             cuptir::activity::Kind::Driver,
@@ -17,13 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cuptir::activity::Kind::Memcpy2,
             cuptir::activity::Kind::MemoryPool,
         ])
-        .with_activity_latency_timestamps(true)
-        .with_activity_record_buffer_callback(|buffer| {
-            // Normally, this callback should aim to return as quickly as possible in
-            // order to keep the profiling overhead as low as possible. It is very
-            // likely a bad idea to do something similar to the below if you care about
-            // performance. It is recommended to hand this buffer off to some
-            // asynchronous processing logic.
+        .enable_activity_latency_timestamps(true)
+        .with_activity_record_buffer_handler(|buffer| {
             buffer.into_iter().try_for_each(|record| {
                 match record {
                     Ok(r) => match serde_json::to_string(&r) {
@@ -34,6 +34,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Ok::<(), cuptir::error::CuptirError>(())
             })?;
+            Ok(())
+        })
+        .with_callback_domains([callback::Domain::RuntimeApi, callback::Domain::DriverApi])
+        .with_callback_handler(|callback| {
+            match serde_json::to_string(&callback) {
+                Ok(json) => println!("{json}"),
+                Err(e) => tracing::warn!("json error: {e}"),
+            }
             Ok(())
         })
         .build()?;

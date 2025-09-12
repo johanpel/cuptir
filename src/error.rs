@@ -14,6 +14,10 @@ pub enum CuptirError {
     SentinelEnum(u32),
     #[error("acivity record buffer handler: {0}")]
     ActivityRecordBufferHandler(String),
+    #[error("callback handler: {0}")]
+    CallbackHandler(String),
     #[error("demangle: {0}")]
     Demangle(#[from] cpp_demangle::error::Error),
+    #[error("builder: {0}")]
+    Builder(String),
 }
