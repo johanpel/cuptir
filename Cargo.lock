@@ -229,6 +229,8 @@ dependencies = [
  "candle-core",
  "cpp_demangle",
  "cudarc 0.17.3",
+ "serde",
+ "serde_json",
  "serial_test",
  "strum",
  "thiserror 2.0.16",

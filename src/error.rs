@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Error, Debug, PartialEq, Eq)]
+#[derive(Clone, Error, Debug, PartialEq, Eq)]
 pub enum CuptirError {
     #[error("cupti error {0}")]
     Cupti(#[from] cudarc::cupti::result::CuptiError),
