@@ -161,7 +161,7 @@ pub enum Callback {
 pub(crate) unsafe extern "C" fn handler(
     _userdata: *mut ::core::ffi::c_void,
     domain: sys::CUpti_CallbackDomain,
-    cbid: sys::CUpti_CallbackId,
+    _cbid: sys::CUpti_CallbackId,
     cbdata: *const ::core::ffi::c_void,
 ) {
     if cbdata.is_null() {

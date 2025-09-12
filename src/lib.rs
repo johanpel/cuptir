@@ -132,9 +132,9 @@ impl ContextBuilder {
         trace!("subscribing context");
         if let Some(callback_handler) = self.callback_handler {
             if context.enabled_callback_domains.is_empty() {
-                return Err(CuptirError::Builder(format!(
-                    "callback handler provided, but no domains were enabled"
-                )));
+                return Err(CuptirError::Builder(
+                    "callback handler provided, but no domains were enabled".to_string(),
+                ));
             } else {
                 callback::set_callback_handler(callback_handler)?;
                 unsafe {
@@ -145,20 +145,18 @@ impl ContextBuilder {
                     )?;
                 }
             }
+        } else if !context.enabled_callback_domains.is_empty() {
+            return Err(CuptirError::Builder(format!(
+                "callback domains {:?} are enabled, but no callback handler is set",
+                context.enabled_callback_domains
+            )));
         } else {
-            if !context.enabled_callback_domains.is_empty() {
-                return Err(CuptirError::Builder(format!(
-                    "callback domains {:?} are enabled, but no callback handler is set",
-                    context.enabled_callback_domains
-                )));
-            } else {
-                unsafe {
-                    cupti::subscribe(
-                        &mut context.sys_subscriber_handle,
-                        None,
-                        context.user_data as *mut _,
-                    )?;
-                }
+            unsafe {
+                cupti::subscribe(
+                    &mut context.sys_subscriber_handle,
+                    None,
+                    context.user_data as *mut _,
+                )?;
             }
         }
 
