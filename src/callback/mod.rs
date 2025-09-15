@@ -14,12 +14,12 @@ pub mod runtime;
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[repr(u32)]
 pub enum Domain {
-    DriverApi = 1,
-    RuntimeApi = 2,
-    Resource = 3,
-    Synchronize = 4,
-    Nvtx = 5,
-    State = 6,
+    DriverApi = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_DRIVER_API as u32,
+    RuntimeApi = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_RUNTIME_API as u32,
+    Resource = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_RESOURCE as u32,
+    Synchronize = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_SYNCHRONIZE as u32,
+    Nvtx = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_NVTX as u32,
+    State = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_STATE as u32,
 }
 
 impl From<Domain> for sys::CUpti_CallbackDomain {
@@ -101,8 +101,8 @@ pub(crate) fn callback_name(
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[repr(u32)]
 pub enum Site {
-    Enter,
-    Exit,
+    Enter = sys::CUpti_ApiCallbackSite::CUPTI_API_ENTER as u32,
+    Exit = sys::CUpti_ApiCallbackSite::CUPTI_API_EXIT as u32,
 }
 
 impl TryFrom<sys::CUpti_ApiCallbackSite> for Site {

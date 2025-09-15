@@ -4,7 +4,7 @@ use cuptir::callback;
 use tracing::level_filters::LevelFilter;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let trace = File::create_new("trace.log")?;
+    let trace = File::create("trace.log")?;
     tracing_subscriber::fmt()
         .with_writer(trace)
         .with_max_level(LevelFilter::TRACE)
@@ -40,8 +40,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?;
             Ok(())
         })
-        // We could enable an entire domain at once as follows:
+        // We could enable callbacks for all APIs from a domains at once as follows:
         // .with_callback_domains([callback::Domain::RuntimeApi, callback::Domain::DriverApi])
+        // However, this is very spammy.
+        // Instead, enable a few callbacks for all async device to host copies.
         .with_callbacks_for_driver([
             callback::driver::Api::cuMemcpyDtoHAsync_v2,
             callback::driver::Api::cuMemcpyDtoHAsync_v2_ptsz,
