@@ -1,10 +1,14 @@
+use std::fs::File;
+
 use cuptir::callback;
 use tracing::level_filters::LevelFilter;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let trace = File::create_new("trace.log")?;
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_writer(trace)
         .with_max_level(LevelFilter::TRACE)
+        .with_ansi(false)
         .init();
 
     // Set up context. Normally, the callbacks should aim to return as quickly as
@@ -36,10 +40,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?;
             Ok(())
         })
-        .with_callback_domains([callback::Domain::RuntimeApi, callback::Domain::DriverApi])
+        // We could enable an entire domain at once as follows:
+        // .with_callback_domains([callback::Domain::RuntimeApi, callback::Domain::DriverApi])
+        .with_callbacks_for_driver([
+            callback::driver::Api::cuMemcpyDtoHAsync_v2,
+            callback::driver::Api::cuMemcpyDtoHAsync_v2_ptsz,
+            callback::driver::Api::cuMemcpyDtoHAsync,
+            callback::driver::Api::cu64MemcpyDtoHAsync,
+        ])
         .with_callback_handler(|callback| {
             match serde_json::to_string(&callback) {
-                Ok(json) => println!("{json}"),
+                Ok(json) => eprintln!("{json}"),
                 Err(e) => tracing::warn!("json error: {e}"),
             }
             Ok(())

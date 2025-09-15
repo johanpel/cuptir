@@ -26,7 +26,9 @@ pub struct Context {
 
     // Callback API stuff
     enabled_callback_domains: Vec<callback::Domain>,
-    sys_subscriber_handle: sys::CUpti_SubscriberHandle,
+    enabled_callback_driver_apis: Vec<callback::driver::Api>,
+    enabled_callback_runtime_apis: Vec<callback::runtime::Api>,
+    subscriber_handle: sys::CUpti_SubscriberHandle,
     user_data: *mut u8, // User data on the heap, TODO make generic
 }
 
@@ -54,6 +56,8 @@ pub struct ContextBuilder {
     activity_latency_timestamps: bool,
 
     enabled_callback_domains: HashSet<callback::Domain>,
+    enabled_callback_driver_apis: HashSet<callback::driver::Api>,
+    enabled_callback_runtime_apis: HashSet<callback::runtime::Api>,
     callback_handler: Option<Box<callback::CallbackHandlerFn>>,
 }
 
@@ -89,11 +93,30 @@ impl ContextBuilder {
     }
 
     /// Add the supplied domains to the set of activated callback domains.
+    ///
+    /// Note this enables all callbacks in the specified domain and should be used with
+    /// care.
     pub fn with_callback_domains(
         mut self,
         domains: impl IntoIterator<Item = callback::Domain>,
     ) -> Self {
         self.enabled_callback_domains.extend(domains);
+        self
+    }
+
+    pub fn with_callbacks_for_driver(
+        mut self,
+        callbacks: impl IntoIterator<Item = callback::driver::Api>,
+    ) -> Self {
+        self.enabled_callback_driver_apis.extend(callbacks);
+        self
+    }
+
+    pub fn with_callbacks_for_runtime(
+        mut self,
+        callbacks: impl IntoIterator<Item = callback::runtime::Api>,
+    ) -> Self {
+        self.enabled_callback_runtime_apis.extend(callbacks);
         self
     }
 
@@ -103,7 +126,7 @@ impl ContextBuilder {
     /// overhead.
     pub fn with_callback_handler<F>(mut self, handler: F) -> Self
     where
-        F: Fn(callback::Callback) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+        F: Fn(callback::Data) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
             + Send
             + Sync
             + 'static,
@@ -119,10 +142,12 @@ impl ContextBuilder {
     pub fn build(self) -> Result<Context, CuptirError> {
         let mut context = Context {
             enabled_activity_kinds: self.enabled_activity_kinds.into_iter().collect(),
-            sys_subscriber_handle: std::ptr::null_mut(),
+            subscriber_handle: std::ptr::null_mut(),
             user_data: std::ptr::null_mut(),
 
             enabled_callback_domains: self.enabled_callback_domains.into_iter().collect(),
+            enabled_callback_driver_apis: self.enabled_callback_driver_apis.into_iter().collect(),
+            enabled_callback_runtime_apis: self.enabled_callback_runtime_apis.into_iter().collect(),
         };
 
         // Subscribe. This can fail if theres some other thing trying to use CUPTI
@@ -130,8 +155,11 @@ impl ContextBuilder {
         // doing anything else. So even if we don't use the callback API we still
         // need to pass a handler.
         trace!("subscribing context");
+        let no_enabled_callbacks = context.enabled_callback_domains.is_empty()
+            && context.enabled_callback_driver_apis.is_empty()
+            && context.enabled_callback_runtime_apis.is_empty();
         if let Some(callback_handler) = self.callback_handler {
-            if context.enabled_callback_domains.is_empty() {
+            if no_enabled_callbacks {
                 return Err(CuptirError::Builder(
                     "callback handler provided, but no domains were enabled".to_string(),
                 ));
@@ -139,13 +167,13 @@ impl ContextBuilder {
                 callback::set_callback_handler(callback_handler)?;
                 unsafe {
                     cupti::subscribe(
-                        &mut context.sys_subscriber_handle,
+                        &mut context.subscriber_handle,
                         Some(callback::handler),
                         context.user_data as *mut _,
                     )?;
                 }
             }
-        } else if !context.enabled_callback_domains.is_empty() {
+        } else if !no_enabled_callbacks {
             return Err(CuptirError::Builder(format!(
                 "callback domains {:?} are enabled, but no callback handler is set",
                 context.enabled_callback_domains
@@ -153,7 +181,7 @@ impl ContextBuilder {
         } else {
             unsafe {
                 cupti::subscribe(
-                    &mut context.sys_subscriber_handle,
+                    &mut context.subscriber_handle,
                     None,
                     context.user_data as *mut _,
                 )?;
@@ -169,7 +197,44 @@ impl ContextBuilder {
             .enabled_callback_domains
             .iter()
             .try_for_each(|domain| unsafe {
-                cupti::enable_domain(1, context.sys_subscriber_handle, (*domain).into())
+                cupti::enable_domain(1, context.subscriber_handle, (*domain).into())
+            })?;
+
+        // Enable the callback for specific driver and runtime API functions
+        if !context.enabled_callback_driver_apis.is_empty() {
+            trace!(
+                "enabling callback for CUDA driver APIs: {:?}",
+                context.enabled_callback_driver_apis
+            );
+        }
+        context
+            .enabled_callback_driver_apis
+            .iter()
+            .try_for_each(|api| unsafe {
+                cupti::enable_callback(
+                    1,
+                    context.subscriber_handle,
+                    sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_DRIVER_API,
+                    (*api) as u32,
+                )
+            })?;
+
+        if !context.enabled_callback_runtime_apis.is_empty() {
+            trace!(
+                "enabling callback for CUDA runtime APIs: {:?}",
+                context.enabled_callback_runtime_apis
+            );
+        }
+        context
+            .enabled_callback_runtime_apis
+            .iter()
+            .try_for_each(|api| unsafe {
+                cupti::enable_callback(
+                    1,
+                    context.subscriber_handle,
+                    sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_RUNTIME_API,
+                    (*api) as u32,
+                )
             })?;
 
         // Set the activity record handler, if any.
@@ -178,25 +243,27 @@ impl ContextBuilder {
             activity::set_record_buffer_handler(activity_record_buffer_handler)?;
         }
 
-        if self.activity_latency_timestamps {
-            trace!("enabling latency timestamps");
-            cupti::activity::enable_latency_timestamps(1)?;
+        if !context.enabled_activity_kinds.is_empty() {
+            if self.activity_latency_timestamps {
+                trace!("enabling latency timestamps");
+                cupti::activity::enable_latency_timestamps(1)?;
+            }
+
+            trace!("registering activity buffer callbacks");
+            cupti::activity::register_callbacks(
+                Some(activity::buffer_requested_callback),
+                Some(activity::buffer_complete_callback),
+            )?;
+
+            trace!(
+                "enabling activity kinds: {:?}",
+                context.enabled_activity_kinds
+            );
+            context
+                .enabled_activity_kinds
+                .iter()
+                .try_for_each(|activity_kind| cupti::activity::enable((*activity_kind).into()))?;
         }
-
-        trace!("registering activity buffer callbacks");
-        cupti::activity::register_callbacks(
-            Some(activity::buffer_requested_callback),
-            Some(activity::buffer_complete_callback),
-        )?;
-
-        trace!(
-            "enabling activity kinds: {:?}",
-            context.enabled_activity_kinds
-        );
-        context
-            .enabled_activity_kinds
-            .iter()
-            .try_for_each(|activity_kind| cupti::activity::enable((*activity_kind).into()))?;
 
         Ok(context)
     }
@@ -220,9 +287,9 @@ impl Drop for Context {
             tracing::warn!("unable to disable CUPTI activity: {error}");
         }
 
-        if !self.sys_subscriber_handle.is_null() {
+        if !self.subscriber_handle.is_null() {
             trace!("unsubscribing context");
-            if let Err(error) = unsafe { cupti::unsubscribe(self.sys_subscriber_handle) } {
+            if let Err(error) = unsafe { cupti::unsubscribe(self.subscriber_handle) } {
                 tracing::warn!("unable to unsubscribe CUPTI client: {error}");
             }
         }
@@ -235,23 +302,35 @@ impl Drop for Context {
     }
 }
 
-// TODO: figure out whether we should deallocate ourselves across usages. Docs aren't
-// super clear on this.
-fn try_string_from_ffi(c_string: *const ffi::c_char) -> Option<String> {
-    NonNull::new(c_string as *mut _).map(|p| {
-        unsafe { CStr::from_ptr(p.as_ptr()) }
-            .to_string_lossy()
-            .into_owned()
-    })
+/// Return a CStr from a C string if the C string is not a nullptr.
+///
+/// # Safety
+/// Other safety rules are described by [CStr::from_ptr]
+unsafe fn try_cstr_from_ffi<'a>(c_str: *const ffi::c_char) -> Option<&'a CStr> {
+    NonNull::new(c_str as *mut _).map(|p| unsafe { CStr::from_ptr(p.as_ptr()) })
 }
 
-// TODO: optimize
-fn try_demangle_from_ffi(c_string: *const ffi::c_char) -> Option<String> {
-    try_string_from_ffi(c_string).map(|string| {
-        cpp_demangle::Symbol::new(string.as_str())
-            .map(|symbol| symbol.to_string())
-            .ok()
-            .unwrap_or(string)
+/// Return a &str from a C string if the C string is not a nullptr and is valid UTF-8.
+///
+/// # Safety
+/// Other safety rules are described by [CStr::from_ptr]
+unsafe fn try_str_from_ffi<'a>(c_str: *const ffi::c_char) -> Option<&'a str> {
+    unsafe { try_cstr_from_ffi(c_str) }.and_then(|c_str| c_str.to_str().ok())
+}
+
+/// Return a demangled symbol name if C string is not a nullptr and represents a symbol
+/// name.
+///
+/// # Safety
+/// Other safety rules are described by [CStr::from_ptr]
+unsafe fn try_demangle_from_ffi(c_str: *const ffi::c_char) -> Option<String> {
+    unsafe { try_cstr_from_ffi(c_str) }.and_then(|c_str| {
+        c_str.to_str().ok().map(|utf8_str| {
+            cpp_demangle::Symbol::new(utf8_str)
+                .map(|symbol| symbol.to_string())
+                .ok()
+                .unwrap_or(utf8_str.to_owned())
+        })
     })
 }
 

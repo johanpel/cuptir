@@ -9,9 +9,7 @@ use serde::{Deserialize, Serialize};
 use strum::FromRepr;
 use tracing::{trace, warn};
 
-use crate::{
-    callback::callback_name, error::CuptirError, try_demangle_from_ffi, try_string_from_ffi,
-};
+use crate::{callback::callback_name, error::CuptirError, try_demangle_from_ffi, try_str_from_ffi};
 
 /// Default CUPTI buffer size.
 ///
@@ -459,7 +457,7 @@ impl TryFrom<&sys::CUpti_ActivityKernel9> for KernelRecord {
             local_memory_total: value.localMemoryTotal,
             correlation_id: value.correlationId,
             grid_id: value.gridId,
-            name: try_demangle_from_ffi(value.name),
+            name: unsafe { try_demangle_from_ffi(value.name) },
             queued: if value.queued == sys::CUPTI_TIMESTAMP_UNKNOWN as u64 {
                 None
             } else {
@@ -658,10 +656,10 @@ impl TryFrom<&sys::CUpti_ActivityMemory4> for MemoryRecord {
             device_id: value.deviceId,
             context_id: value.contextId,
             stream_id: value.streamId,
-            name: try_demangle_from_ffi(value.name),
+            name: unsafe { try_demangle_from_ffi(value.name) },
             is_async: value.isAsync,
             pad1: value.pad1,
-            source: try_string_from_ffi(value.source),
+            source: unsafe { try_str_from_ffi(value.source) }.map(ToOwned::to_owned),
         })
     }
 }
