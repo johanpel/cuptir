@@ -10,6 +10,8 @@ pub enum CuptirError {
     Corrupted,
     #[error("not implemented")]
     NotImplemented,
+    #[error("not supported by CUPTI")]
+    CuptiNotSupported,
     #[error("unexpected sentinel enum variant: {0}")]
     SentinelEnum(u32),
     #[error("acivity record buffer handler: {0}")]

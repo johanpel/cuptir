@@ -15,7 +15,6 @@ cudarc = { git = "https://github.com/johanpel/cudarc.git", branch = "cupti_nvrtc
     "cuda-version-from-build-system",
     "dynamic-linking",
     "cupti",
-    "driver",
     "std",
 ] }
 serde = { version = "1.0.129", features = ["derive"], optional = true }
@@ -29,6 +28,7 @@ candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.
 tracing-subscriber = "0.3.20"
 serial_test = "3.2.0"
 serde_json = "1.0.143"
+colored = "3.0.0"
 
 [[example]]
 name = "candle"

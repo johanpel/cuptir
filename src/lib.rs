@@ -1,7 +1,7 @@
 use core::ffi;
 use std::{collections::HashSet, ffi::CStr, ptr::NonNull};
 
-use cudarc::{cupti::result as cupti, cupti::sys};
+use cudarc::cupti::result;
 use tracing::trace;
 
 use crate::error::CuptirError;
@@ -9,6 +9,8 @@ use crate::error::CuptirError;
 pub mod activity;
 pub mod callback;
 pub mod error;
+
+pub use cudarc::cupti::sys;
 
 /// Global context for cuptir.
 ///
@@ -26,8 +28,8 @@ pub struct Context {
 
     // Callback API stuff
     enabled_callback_domains: Vec<callback::Domain>,
-    enabled_callback_driver_apis: Vec<callback::driver::Api>,
-    enabled_callback_runtime_apis: Vec<callback::runtime::Api>,
+    enabled_callback_driver_apis: Vec<callback::driver::Function>,
+    enabled_callback_runtime_apis: Vec<callback::runtime::Function>,
     subscriber_handle: sys::CUpti_SubscriberHandle,
     user_data: *mut u8, // User data on the heap, TODO make generic
 }
@@ -41,7 +43,7 @@ impl Context {
     /// Flush the activity buffers, potentially triggering the activity record handler.
     pub fn flush_activity() -> Result<(), CuptirError> {
         trace!("flushing activity buffer");
-        cupti::activity::flush_all(
+        result::activity::flush_all(
             sys::CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_FLUSH_FORCED as u32,
         )?;
         Ok(())
@@ -56,8 +58,8 @@ pub struct ContextBuilder {
     activity_latency_timestamps: bool,
 
     enabled_callback_domains: HashSet<callback::Domain>,
-    enabled_callback_driver_apis: HashSet<callback::driver::Api>,
-    enabled_callback_runtime_apis: HashSet<callback::runtime::Api>,
+    enabled_callback_driver_apis: HashSet<callback::driver::Function>,
+    enabled_callback_runtime_apis: HashSet<callback::runtime::Function>,
     callback_handler: Option<Box<callback::CallbackHandlerFn>>,
 }
 
@@ -106,7 +108,7 @@ impl ContextBuilder {
 
     pub fn with_callbacks_for_driver(
         mut self,
-        callbacks: impl IntoIterator<Item = callback::driver::Api>,
+        callbacks: impl IntoIterator<Item = callback::driver::Function>,
     ) -> Self {
         self.enabled_callback_driver_apis.extend(callbacks);
         self
@@ -114,7 +116,7 @@ impl ContextBuilder {
 
     pub fn with_callbacks_for_runtime(
         mut self,
-        callbacks: impl IntoIterator<Item = callback::runtime::Api>,
+        callbacks: impl IntoIterator<Item = callback::runtime::Function>,
     ) -> Self {
         self.enabled_callback_runtime_apis.extend(callbacks);
         self
@@ -166,7 +168,7 @@ impl ContextBuilder {
             } else {
                 callback::set_callback_handler(callback_handler)?;
                 unsafe {
-                    cupti::subscribe(
+                    result::subscribe(
                         &mut context.subscriber_handle,
                         Some(callback::handler),
                         context.user_data as *mut _,
@@ -180,7 +182,7 @@ impl ContextBuilder {
             )));
         } else {
             unsafe {
-                cupti::subscribe(
+                result::subscribe(
                     &mut context.subscriber_handle,
                     None,
                     context.user_data as *mut _,
@@ -188,16 +190,18 @@ impl ContextBuilder {
             }
         }
 
-        // Enable the callback domains
-        trace!(
-            "enabling callback domains: {:?}",
-            context.enabled_callback_domains
-        );
+        // Enable the callback domains, if needed.
+        if !context.enabled_callback_domains.is_empty() {
+            trace!(
+                "enabling callback domains: {:?}",
+                context.enabled_callback_domains
+            );
+        }
         context
             .enabled_callback_domains
             .iter()
             .try_for_each(|domain| unsafe {
-                cupti::enable_domain(1, context.subscriber_handle, (*domain).into())
+                result::enable_domain(1, context.subscriber_handle, (*domain).into())
             })?;
 
         // Enable the callback for specific driver and runtime API functions
@@ -211,7 +215,7 @@ impl ContextBuilder {
             .enabled_callback_driver_apis
             .iter()
             .try_for_each(|api| unsafe {
-                cupti::enable_callback(
+                result::enable_callback(
                     1,
                     context.subscriber_handle,
                     sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_DRIVER_API,
@@ -229,7 +233,7 @@ impl ContextBuilder {
             .enabled_callback_runtime_apis
             .iter()
             .try_for_each(|api| unsafe {
-                cupti::enable_callback(
+                result::enable_callback(
                     1,
                     context.subscriber_handle,
                     sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_RUNTIME_API,
@@ -246,11 +250,11 @@ impl ContextBuilder {
         if !context.enabled_activity_kinds.is_empty() {
             if self.activity_latency_timestamps {
                 trace!("enabling latency timestamps");
-                cupti::activity::enable_latency_timestamps(1)?;
+                result::activity::enable_latency_timestamps(1)?;
             }
 
             trace!("registering activity buffer callbacks");
-            cupti::activity::register_callbacks(
+            result::activity::register_callbacks(
                 Some(activity::buffer_requested_callback),
                 Some(activity::buffer_complete_callback),
             )?;
@@ -262,7 +266,7 @@ impl ContextBuilder {
             context
                 .enabled_activity_kinds
                 .iter()
-                .try_for_each(|activity_kind| cupti::activity::enable((*activity_kind).into()))?;
+                .try_for_each(|activity_kind| result::activity::enable((*activity_kind).into()))?;
         }
 
         Ok(context)
@@ -282,14 +286,14 @@ impl Drop for Context {
         if let Err(error) = self
             .enabled_activity_kinds
             .iter()
-            .try_for_each(|activity_kind| cupti::activity::disable((*activity_kind).into()))
+            .try_for_each(|activity_kind| result::activity::disable((*activity_kind).into()))
         {
             tracing::warn!("unable to disable CUPTI activity: {error}");
         }
 
         if !self.subscriber_handle.is_null() {
             trace!("unsubscribing context");
-            if let Err(error) = unsafe { cupti::unsubscribe(self.subscriber_handle) } {
+            if let Err(error) = unsafe { result::unsubscribe(self.subscriber_handle) } {
                 tracing::warn!("unable to unsubscribe CUPTI client: {error}");
             }
         }
@@ -359,7 +363,7 @@ mod tests {
         assert!(context1.is_err());
         assert!(
             context1.unwrap_err()
-                == CuptirError::Cupti(cupti::CuptiError(
+                == CuptirError::Cupti(result::CuptiError(
                     sys::CUptiResult::CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED
                 ))
         );

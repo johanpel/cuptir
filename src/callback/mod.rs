@@ -121,9 +121,13 @@ impl TryFrom<sys::CUpti_ApiCallbackSite> for Site {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-pub struct ApiData {
-    pub callback_site: Site,
-    pub function_name: Option<String>,
+pub struct DriverApiCallbackData {
+    pub function: driver::Function,
+    // TODO: figure out how to best serialize and expose this field in the public API
+    #[serde(skip)]
+    pub arguments: Option<driver::FunctionArguments>,
+    pub site: Site,
+    // pub function_name: Option<String>,
     // pub functionParams: *const ::core::ffi::c_void,
     // pub functionReturnValue: *mut ::core::ffi::c_void,
     pub symbol_name: Option<String>,
@@ -133,95 +137,111 @@ pub struct ApiData {
     pub correlation_id: u32,
 }
 
-impl ApiData {
-    // We need to be careful with the source field in ApiData. CUPTI docs mention that
-    // the entry is only valid for driver and runtime "launch" callbacks, where it
-    // returns the name of the kernel. Unfortunately, it doesn't zero-initialize the
-    // struct, so we can't simply check by nullptr whether this holds anything valid. We
-    // have to check the callback ids, so they are needed for the conversion, hence
-    // we're not trivially implementing TryFrom.
-
-    fn try_from_cupti_callback_data(
-        data: &sys::CUpti_CallbackData,
-        with_symbol_name: bool,
+impl DriverApiCallbackData {
+    fn try_new(
+        driver_callback_id: u32,
+        value: &sys::CUpti_CallbackData,
     ) -> Result<Self, CuptirError> {
+        let function = driver::Function::try_from(driver_callback_id)?;
+        let site = value.callbackSite.try_into()?;
+
+        // CUPTI docs mention that the symbol_name is only valid for callbacks on
+        // "launch" functions, where it returns the name of the kernel. Unfortunately,
+        // it doesn't zero-initialize the struct, so we can't simply check by nullptr
+        // whether this holds anything valid. We have to check the callback ids, so they
+        // are needed for the conversion, hence we're not trivially implementing
+        // TryFrom.
+        let symbol_name = if matches!(
+            function,
+            driver::Function::cuLaunch
+                | driver::Function::cuLaunchCooperativeKernel_ptsz
+                | driver::Function::cuLaunchCooperativeKernel
+                | driver::Function::cuLaunchCooperativeKernelMultiDevice
+                | driver::Function::cuLaunchGrid
+                | driver::Function::cuLaunchGridAsync
+                | driver::Function::cuLaunchHostFunc_ptsz
+                | driver::Function::cuLaunchHostFunc
+                | driver::Function::cuLaunchKernel_ptsz
+                | driver::Function::cuLaunchKernel
+                | driver::Function::cuLaunchKernelEx_ptsz
+                | driver::Function::cuLaunchKernelEx
+        ) {
+            unsafe { try_demangle_from_ffi(value.symbolName) }
+        } else {
+            None
+        };
         Ok(Self {
-            callback_site: data.callbackSite.try_into()?,
-            function_name: unsafe { try_demangle_from_ffi(data.functionName) },
-            symbol_name: if with_symbol_name {
-                unsafe { try_demangle_from_ffi(data.symbolName) }
-            } else {
-                None
-            },
-            context_uid: data.contextUid,
-            correlation_id: data.correlationId,
+            function,
+            arguments: driver::FunctionArguments::try_new(function, value.functionParams).ok(),
+            site,
+            symbol_name,
+            context_uid: value.contextUid,
+            correlation_id: value.correlationId,
         })
     }
 
-    fn try_from_driver(
-        id: sys::CUpti_driver_api_trace_cbid_enum,
-        data: &sys::CUpti_CallbackData,
-    ) -> Result<Self, CuptirError> {
-        use sys::CUpti_driver_api_trace_cbid_enum as D;
-        Self::try_from_cupti_callback_data(
-            data,
-            matches!(
-                id,
-                D::CUPTI_DRIVER_TRACE_CBID_cuLaunch
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernel_ptsz
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernel
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernelMultiDevice
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchGrid
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchGridAsync
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchHostFunc_ptsz
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchHostFunc
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchKernel_ptsz
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchKernel
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchKernelEx_ptsz
-                    | D::CUPTI_DRIVER_TRACE_CBID_cuLaunchKernelEx
-            ),
-        )
+    pub fn function_name(&self) -> Result<String, CuptirError> {
+        callback_name(Domain::DriverApi.into(), self.function as u32)
     }
-
-    fn try_from_runtime(
-        id: sys::CUpti_runtime_api_trace_cbid_enum,
-        data: &sys::CUpti_CallbackData,
-    ) -> Result<Self, CuptirError> {
-        use sys::CUpti_runtime_api_trace_cbid_enum as R;
-        Self::try_from_cupti_callback_data(
-            data,
-            matches!(
-                id,
-                R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunch_ptsz_v7000
-                    | R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunch_v3020
-                    | R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunchCooperativeKernel_ptsz_v9000
-                    | R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunchCooperativeKernel_v9000
-                    | R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunchCooperativeKernelMultiDevice_v9000
-                    | R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunchHostFunc_ptsz_v10000
-                    | R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunchHostFunc_v10000
-                    | R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunchKernel_ptsz_v7000
-                    | R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunchKernel_v7000
-                    | R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunchKernelExC_ptsz_v11060
-                    | R::CUPTI_RUNTIME_TRACE_CBID_cudaLaunchKernelExC_v11060
-            ),
-        )
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-pub struct DriverApiCallbackData {
-    /// The callback id in the driver domain
-    callback_id: u32,
-    callback_data: ApiData,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct RuntimeApiCallbackData {
-    /// The callback id in the runtime domain
-    callback_id: u32,
-    callback_data: ApiData,
+    pub function: runtime::Function,
+    #[serde(skip)]
+    pub arguments: Option<runtime::FunctionArguments>,
+    pub site: Site,
+    // pub function_name: Option<String>,
+    // pub functionParams: *const ::core::ffi::c_void,
+    // pub functionReturnValue: *mut ::core::ffi::c_void,
+    pub symbol_name: Option<String>,
+    // pub context: CUcontext,
+    pub context_uid: u32,
+    // pub correlationData: *mut u64,
+    pub correlation_id: u32,
+}
+
+impl RuntimeApiCallbackData {
+    fn try_new(
+        runtime_callback_id: u32,
+        value: &sys::CUpti_CallbackData,
+    ) -> Result<Self, CuptirError> {
+        let function = runtime::Function::try_from(runtime_callback_id)?;
+        let site = value.callbackSite.try_into()?;
+
+        // CUPTI docs mention that the entry is only valid for "launch" callbacks.
+        let symbol_name = if matches!(
+            function,
+            runtime::Function::cudaLaunch_ptsz_v7000
+                | runtime::Function::cudaLaunch_v3020
+                | runtime::Function::cudaLaunchCooperativeKernel_ptsz_v9000
+                | runtime::Function::cudaLaunchCooperativeKernel_v9000
+                | runtime::Function::cudaLaunchCooperativeKernelMultiDevice_v9000
+                | runtime::Function::cudaLaunchHostFunc_ptsz_v10000
+                | runtime::Function::cudaLaunchHostFunc_v10000
+                | runtime::Function::cudaLaunchKernel_ptsz_v7000
+                | runtime::Function::cudaLaunchKernel_v7000
+                | runtime::Function::cudaLaunchKernelExC_ptsz_v11060
+                | runtime::Function::cudaLaunchKernelExC_v11060
+        ) {
+            unsafe { try_demangle_from_ffi(value.symbolName) }
+        } else {
+            None
+        };
+        Ok(Self {
+            function,
+            arguments: runtime::FunctionArguments::try_new(function, value.functionParams).ok(),
+            site,
+            symbol_name,
+            context_uid: value.contextUid,
+            correlation_id: value.correlationId,
+        })
+    }
+
+    pub fn function_name(&self) -> Result<String, CuptirError> {
+        callback_name(Domain::RuntimeApi.into(), self.function as u32)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -252,38 +272,12 @@ pub(crate) unsafe extern "C" fn handler(
             Domain::DriverApi => {
                 let data: &sys::CUpti_CallbackData =
                     unsafe { &*(cbdata as *const sys::CUpti_CallbackData) };
-                ApiData::try_from_driver(
-                    unsafe {
-                        std::mem::transmute::<
-                            u32,
-                            cudarc::cupti::sys::CUpti_driver_api_trace_cbid_enum,
-                        >(cbid)
-                    },
-                    data,
-                )
-                .map(|callback_data| DriverApiCallbackData {
-                    callback_id: cbid,
-                    callback_data,
-                })
-                .map(Data::DriverApi)
+                DriverApiCallbackData::try_new(cbid, data).map(Data::DriverApi)
             }
             Domain::RuntimeApi => {
                 let data: &sys::CUpti_CallbackData =
                     unsafe { &*(cbdata as *const sys::CUpti_CallbackData) };
-                ApiData::try_from_runtime(
-                    unsafe {
-                        std::mem::transmute::<
-                            u32,
-                            cudarc::cupti::sys::CUpti_runtime_api_trace_cbid_enum,
-                        >(cbid)
-                    },
-                    data,
-                )
-                .map(|callback_data| RuntimeApiCallbackData {
-                    callback_id: cbid,
-                    callback_data,
-                })
-                .map(Data::RuntimeApi)
+                RuntimeApiCallbackData::try_new(cbid, data).map(Data::RuntimeApi)
             }
             Domain::Resource => Ok(Data::Resource),
             Domain::Synchronize => Ok(Data::Synchronize),
