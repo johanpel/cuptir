@@ -15,6 +15,10 @@ pub use cudarc::cupti::sys;
 pub mod enums {
     include!(concat!(env!("OUT_DIR"), "/enums.rs"));
 }
+// Generated meta structs
+pub mod function_params {
+    include!(concat!(env!("OUT_DIR"), "/function_params.rs"));
+}
 
 /// Global context for cuptir.
 ///

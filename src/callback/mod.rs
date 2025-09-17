@@ -63,7 +63,7 @@ pub struct DriverApiCallbackData {
     pub function: driver::Function,
     // TODO: figure out how to best serialize and expose this field in the public API
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub arguments: Option<driver::FunctionArguments>,
+    pub arguments: Option<driver::FunctionParams>,
     pub site: Site,
     // pub function_name: Option<String>,
     // pub functionParams: *const ::core::ffi::c_void,
@@ -80,7 +80,9 @@ impl DriverApiCallbackData {
         driver_callback_id: u32,
         value: &sys::CUpti_CallbackData,
     ) -> Result<Self, CuptirError> {
-        let function = driver::Function::try_from(driver_callback_id)?;
+        let function = driver::Function::try_from(unsafe {
+            std::mem::transmute::<u32, sys::CUpti_driver_api_trace_cbid>(driver_callback_id)
+        })?;
         let site = value.callbackSite.try_into()?;
 
         // CUPTI docs mention that the symbol_name is only valid for callbacks on
@@ -110,7 +112,7 @@ impl DriverApiCallbackData {
         };
         Ok(Self {
             function,
-            arguments: driver::FunctionArguments::try_new(function, value.functionParams).ok(),
+            arguments: driver::FunctionParams::try_new(function, value.functionParams).ok(),
             site,
             symbol_name,
             context_uid: value.contextUid,
@@ -128,7 +130,7 @@ impl DriverApiCallbackData {
 pub struct RuntimeApiCallbackData {
     pub function: runtime::Function,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub arguments: Option<runtime::FunctionArguments>,
+    pub arguments: Option<runtime::FunctionParams>,
     pub site: Site,
     // pub function_name: Option<String>,
     // pub functionParams: *const ::core::ffi::c_void,
@@ -145,7 +147,9 @@ impl RuntimeApiCallbackData {
         runtime_callback_id: u32,
         value: &sys::CUpti_CallbackData,
     ) -> Result<Self, CuptirError> {
-        let function = runtime::Function::try_from(runtime_callback_id)?;
+        let function = runtime::Function::try_from(unsafe {
+            std::mem::transmute::<u32, sys::CUpti_runtime_api_trace_cbid>(runtime_callback_id)
+        })?;
         let site = value.callbackSite.try_into()?;
 
         // CUPTI docs mention that the entry is only valid for "launch" callbacks.
@@ -169,7 +173,7 @@ impl RuntimeApiCallbackData {
         };
         Ok(Self {
             function,
-            arguments: runtime::FunctionArguments::try_new(function, value.functionParams).ok(),
+            arguments: runtime::FunctionParams::try_new(function, value.functionParams).ok(),
             site,
             symbol_name,
             context_uid: value.contextUid,
