@@ -306,6 +306,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder = builder.allowlist_var("^[Cc][Uu][Pp][Tt][Ii].*");
 
     for expr in [
+        "cudaSignalExternalSemaphoresAsync_ptsz_v10000_params_st",
+        "cudaSignalExternalSemaphoresAsync_ptsz_v10000_params",
+        "cudaSignalExternalSemaphoresAsync_v10000_params_st",
+        "cudaSignalExternalSemaphoresAsync_v10000_params",
+        "cudaWaitExternalSemaphoresAsync_ptsz_v10000_params_st",
+        "cudaWaitExternalSemaphoresAsync_ptsz_v10000_params",
+        "cudaWaitExternalSemaphoresAsync_v10000_params_st",
+        "cudaWaitExternalSemaphoresAsync_v10000_params",
+    ] {
+        builder = builder.blocklist_type(expr)
+    }
+
+    for expr in [
         "use cudarc::driver::sys::*;",
         "use cudarc::runtime::sys::*;",
     ] {
