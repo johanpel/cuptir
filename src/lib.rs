@@ -9,8 +9,12 @@ use crate::error::CuptirError;
 pub mod activity;
 pub mod callback;
 pub mod error;
-
 pub use cudarc::cupti::sys;
+
+// Generated enums
+pub mod enums {
+    include!(concat!(env!("OUT_DIR"), "/enums.rs"));
+}
 
 /// Global context for cuptir.
 ///

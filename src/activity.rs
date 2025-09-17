@@ -6,10 +6,18 @@ use std::{
 use cudarc::cupti::{result as cupti, sys};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use strum::FromRepr;
 use tracing::{trace, warn};
 
 use crate::{callback::callback_name, error::CuptirError, try_demangle_from_ffi, try_str_from_ffi};
+
+pub type ChannelType = crate::enums::ChannelType;
+pub type FuncShmemLimitConfig = crate::enums::FuncShmemLimitConfig;
+pub type Kind = crate::enums::ActivityKind;
+pub type MemoryKind = crate::enums::ActivityMemoryKind;
+pub type MemoryOperationType = crate::enums::ActivityMemoryOperationType;
+pub type MemoryPoolOperationType = crate::enums::ActivityMemoryPoolOperationType;
+pub type MemoryPoolType = crate::enums::ActivityMemoryPoolType;
+pub type PartitionedGlobalCacheConfig = crate::enums::ActivityPartitionedGlobalCacheConfig;
 
 /// Default CUPTI buffer size.
 ///
@@ -136,150 +144,6 @@ fn handle_record_buffer(record_buffer: RecordBuffer) -> Result<(), CuptirError> 
     }
 }
 
-/// CUPTI activity kind.
-///
-/// This matches CUpti_ActivityKind, but contains no sentinel values.
-#[derive(Clone, Copy, Debug, FromRepr, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[repr(u32)]
-#[rustfmt::skip]
-pub enum Kind {
-    Memset                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMSET as u32,
-    Memcpy                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY as u32,
-    Kernel                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_KERNEL as u32,
-    Driver                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DRIVER as u32,
-    Runtime                     = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_RUNTIME as u32,
-    Event                       = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_EVENT as u32,
-    Metric                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_METRIC as u32,
-    Device                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE as u32,
-    Context                     = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONTEXT as u32,
-    ConcurrentKernel            = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL as u32,
-    Name                        = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_NAME as u32,
-    Marker                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MARKER as u32,
-    MarkerData                  = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MARKER_DATA as u32,
-    SourceLocator               = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_SOURCE_LOCATOR as u32,
-    GlobalAccess                = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_GLOBAL_ACCESS as u32,
-    Branch                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_BRANCH as u32,
-    Overhead                    = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OVERHEAD as u32,
-    CdpKernel                   = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CDP_KERNEL as u32,
-    Preemption                  = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PREEMPTION as u32,
-    Environment                 = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_ENVIRONMENT as u32,
-    EventInstance               = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_EVENT_INSTANCE as u32,
-    Memcpy2                     = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY2 as u32,
-    MetricInstance              = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_METRIC_INSTANCE as u32,
-    InstructionExecution        = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTRUCTION_EXECUTION as u32,
-    UnifiedMemoryCounter        = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER as u32,
-    Function                    = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_FUNCTION as u32,
-    Module                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MODULE as u32,
-    DeviceAttribute             = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE_ATTRIBUTE as u32,
-    SharedAccess                = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_SHARED_ACCESS as u32,
-    PcSampling                  = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PC_SAMPLING as u32,
-    PcSamplingRecordInfo        = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PC_SAMPLING_RECORD_INFO as u32,
-    InstructionCorrelation      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTRUCTION_CORRELATION as u32,
-    OpenaccData                 = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENACC_DATA as u32,
-    OpenaccLaunch               = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENACC_LAUNCH as u32,
-    OpenaccOther                = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENACC_OTHER as u32,
-    CudaEvent                   = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CUDA_EVENT as u32,
-    Stream                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_STREAM as u32,
-    Synchronization             = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_SYNCHRONIZATION as u32,
-    ExternalCorrelation         = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION as u32,
-    Nvlink                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_NVLINK as u32,
-    InstantaneousEvent          = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_EVENT as u32,
-    InstantaneousEventInstance  = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_EVENT_INSTANCE as u32,
-    InstantaneousMetric         = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_METRIC as u32,
-    InstantaneousMetricInstance = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_METRIC_INSTANCE as u32,
-    Memory                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY as u32,
-    Pcie                        = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PCIE as u32,
-    Openmp                      = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_OPENMP as u32,
-    InternalLaunchApi           = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INTERNAL_LAUNCH_API as u32,
-    Memory2                     = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY2 as u32,
-    MemoryPool                  = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMORY_POOL as u32,
-    GraphTrace                  = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_GRAPH_TRACE as u32,
-    Jit                         = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_JIT as u32,
-    DeviceGraphTrace            = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE_GRAPH_TRACE as u32,
-    MemDecompress               = sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEM_DECOMPRESS as u32,
-    // ConfidentialComputeRotation = 55,
-}
-
-impl From<Kind> for sys::CUpti_ActivityKind {
-    #[rustfmt::skip]
-    fn from(value: Kind) -> Self {
-        use sys::CUpti_ActivityKind as c;
-        match value {
-            Kind::Memcpy                      => c::CUPTI_ACTIVITY_KIND_MEMCPY,
-            Kind::Memset                      => c::CUPTI_ACTIVITY_KIND_MEMSET,
-            Kind::Kernel                      => c::CUPTI_ACTIVITY_KIND_KERNEL,
-            Kind::Driver                      => c::CUPTI_ACTIVITY_KIND_DRIVER,
-            Kind::Runtime                     => c::CUPTI_ACTIVITY_KIND_RUNTIME,
-            Kind::Event                       => c::CUPTI_ACTIVITY_KIND_EVENT,
-            Kind::Metric                      => c::CUPTI_ACTIVITY_KIND_METRIC,
-            Kind::Device                      => c::CUPTI_ACTIVITY_KIND_DEVICE,
-            Kind::Context                     => c::CUPTI_ACTIVITY_KIND_CONTEXT,
-            Kind::ConcurrentKernel            => c::CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
-            Kind::Name                        => c::CUPTI_ACTIVITY_KIND_NAME,
-            Kind::Marker                      => c::CUPTI_ACTIVITY_KIND_MARKER,
-            Kind::MarkerData                  => c::CUPTI_ACTIVITY_KIND_MARKER_DATA,
-            Kind::SourceLocator               => c::CUPTI_ACTIVITY_KIND_SOURCE_LOCATOR,
-            Kind::GlobalAccess                => c::CUPTI_ACTIVITY_KIND_GLOBAL_ACCESS,
-            Kind::Branch                      => c::CUPTI_ACTIVITY_KIND_BRANCH,
-            Kind::Overhead                    => c::CUPTI_ACTIVITY_KIND_OVERHEAD,
-            Kind::CdpKernel                   => c::CUPTI_ACTIVITY_KIND_CDP_KERNEL,
-            Kind::Preemption                  => c::CUPTI_ACTIVITY_KIND_PREEMPTION,
-            Kind::Environment                 => c::CUPTI_ACTIVITY_KIND_ENVIRONMENT,
-            Kind::EventInstance               => c::CUPTI_ACTIVITY_KIND_EVENT_INSTANCE,
-            Kind::Memcpy2                     => c::CUPTI_ACTIVITY_KIND_MEMCPY2,
-            Kind::MetricInstance              => c::CUPTI_ACTIVITY_KIND_METRIC_INSTANCE,
-            Kind::InstructionExecution        => c::CUPTI_ACTIVITY_KIND_INSTRUCTION_EXECUTION,
-            Kind::UnifiedMemoryCounter        => c::CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER,
-            Kind::Function                    => c::CUPTI_ACTIVITY_KIND_FUNCTION,
-            Kind::Module                      => c::CUPTI_ACTIVITY_KIND_MODULE,
-            Kind::DeviceAttribute             => c::CUPTI_ACTIVITY_KIND_DEVICE_ATTRIBUTE,
-            Kind::SharedAccess                => c::CUPTI_ACTIVITY_KIND_SHARED_ACCESS,
-            Kind::PcSampling                  => c::CUPTI_ACTIVITY_KIND_PC_SAMPLING,
-            Kind::PcSamplingRecordInfo        => c::CUPTI_ACTIVITY_KIND_PC_SAMPLING_RECORD_INFO,
-            Kind::InstructionCorrelation      => c::CUPTI_ACTIVITY_KIND_INSTRUCTION_CORRELATION,
-            Kind::OpenaccData                 => c::CUPTI_ACTIVITY_KIND_OPENACC_DATA,
-            Kind::OpenaccLaunch               => c::CUPTI_ACTIVITY_KIND_OPENACC_LAUNCH,
-            Kind::OpenaccOther                => c::CUPTI_ACTIVITY_KIND_OPENACC_OTHER,
-            Kind::CudaEvent                   => c::CUPTI_ACTIVITY_KIND_CUDA_EVENT,
-            Kind::Stream                      => c::CUPTI_ACTIVITY_KIND_STREAM,
-            Kind::Synchronization             => c::CUPTI_ACTIVITY_KIND_SYNCHRONIZATION,
-            Kind::ExternalCorrelation         => c::CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION,
-            Kind::Nvlink                      => c::CUPTI_ACTIVITY_KIND_NVLINK,
-            Kind::InstantaneousEvent          => c::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_EVENT,
-            Kind::InstantaneousEventInstance  => c::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_EVENT_INSTANCE,
-            Kind::InstantaneousMetric         => c::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_METRIC,
-            Kind::InstantaneousMetricInstance => c::CUPTI_ACTIVITY_KIND_INSTANTANEOUS_METRIC_INSTANCE,
-            Kind::Memory                      => c::CUPTI_ACTIVITY_KIND_MEMORY,
-            Kind::Pcie                        => c::CUPTI_ACTIVITY_KIND_PCIE,
-            Kind::Openmp                      => c::CUPTI_ACTIVITY_KIND_OPENMP,
-            Kind::InternalLaunchApi           => c::CUPTI_ACTIVITY_KIND_INTERNAL_LAUNCH_API,
-            Kind::Memory2                     => c::CUPTI_ACTIVITY_KIND_MEMORY2,
-            Kind::MemoryPool                  => c::CUPTI_ACTIVITY_KIND_MEMORY_POOL,
-            Kind::GraphTrace                  => c::CUPTI_ACTIVITY_KIND_GRAPH_TRACE,
-            Kind::Jit                         => c::CUPTI_ACTIVITY_KIND_JIT,
-            Kind::DeviceGraphTrace            => c::CUPTI_ACTIVITY_KIND_DEVICE_GRAPH_TRACE,
-            Kind::MemDecompress               => c::CUPTI_ACTIVITY_KIND_MEM_DECOMPRESS,
-            // Kind::ConfidentialComputeRotation => c::CUPTI_ACTIVITY_KIND_CONFIDENTIAL_COMPUTE_ROTATION
-        }
-    }
-}
-
-impl TryFrom<sys::CUpti_ActivityKind> for Kind {
-    type Error = CuptirError;
-
-    fn try_from(value: sys::CUpti_ActivityKind) -> Result<Self, Self::Error> {
-        match value {
-            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INVALID
-            | sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_COUNT
-            | sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_FORCE_INT => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
-            other => Self::from_repr(other as u32).ok_or(CuptirError::Corrupted),
-        }
-    }
-}
-
 /// A time stamp
 pub type Timestamp = u64;
 
@@ -334,64 +198,6 @@ pub struct InternalLaunchApiRecord {
     pub props: ApiProps,
 }
 
-#[derive(Clone, Copy, Debug, FromRepr, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[repr(u32)]
-pub enum FuncShmemLimitConfig {
-    Default = sys::CUpti_FuncShmemLimitConfig::CUPTI_FUNC_SHMEM_LIMIT_DEFAULT as u32,
-    Optin = sys::CUpti_FuncShmemLimitConfig::CUPTI_FUNC_SHMEM_LIMIT_OPTIN as u32,
-}
-
-impl TryFrom<sys::CUpti_FuncShmemLimitConfig> for FuncShmemLimitConfig {
-    type Error = CuptirError;
-
-    fn try_from(value: sys::CUpti_FuncShmemLimitConfig) -> Result<Self, Self::Error> {
-        match value {
-            sys::CUpti_FuncShmemLimitConfig::CUPTI_FUNC_SHMEM_LIMIT_DEFAULT => {
-                Ok(FuncShmemLimitConfig::Default)
-            }
-            sys::CUpti_FuncShmemLimitConfig::CUPTI_FUNC_SHMEM_LIMIT_OPTIN => {
-                Ok(FuncShmemLimitConfig::Optin)
-            }
-            sys::CUpti_FuncShmemLimitConfig::CUPTI_FUNC_SHMEM_LIMIT_FORCE_INT => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, FromRepr, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[repr(u32)]
-pub enum PartitionedGlobalCacheConfig {
-    NotSupported = sys::CUpti_ActivityPartitionedGlobalCacheConfig::CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_NOT_SUPPORTED as u32,
-    Off = sys::CUpti_ActivityPartitionedGlobalCacheConfig::CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_OFF as u32,
-    On = sys::CUpti_ActivityPartitionedGlobalCacheConfig::CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_ON as u32,
-}
-
-impl PartitionedGlobalCacheConfig {
-    fn try_from_sys(
-        value: sys::CUpti_ActivityPartitionedGlobalCacheConfig,
-    ) -> Result<Option<Self>, CuptirError> {
-        use sys::CUpti_ActivityPartitionedGlobalCacheConfig as c;
-        Ok(match value {
-            c::CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_UNKNOWN => None,
-            c::CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_NOT_SUPPORTED => {
-                Some(PartitionedGlobalCacheConfig::NotSupported)
-            }
-            c::CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_OFF => {
-                Some(PartitionedGlobalCacheConfig::Off)
-            }
-            c::CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_ON => {
-                Some(PartitionedGlobalCacheConfig::On)
-            }
-            c::CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_FORCE_INT => {
-                Err(CuptirError::SentinelEnum(value as u32))?
-            }
-        })
-    }
-}
-
 /// A kernel record
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
@@ -400,8 +206,8 @@ pub struct KernelRecord {
     // pub cache_config: sys::CUpti_ActivityKernel9__bindgen_ty_1,
     pub shared_memory_config: u8,
     pub registers_per_thread: u16,
-    pub partitioned_global_cache_requested: Option<PartitionedGlobalCacheConfig>,
-    pub partitioned_global_cache_executed: Option<PartitionedGlobalCacheConfig>,
+    pub partitioned_global_cache_requested: PartitionedGlobalCacheConfig,
+    pub partitioned_global_cache_executed: PartitionedGlobalCacheConfig,
     pub start: Timestamp,
     pub end: Timestamp,
     pub completed: Timestamp,
@@ -451,10 +257,10 @@ impl TryFrom<&sys::CUpti_ActivityKernel9> for KernelRecord {
         Ok(KernelRecord {
             shared_memory_config: value.sharedMemoryConfig,
             registers_per_thread: value.registersPerThread,
-            partitioned_global_cache_requested: PartitionedGlobalCacheConfig::try_from_sys(
+            partitioned_global_cache_requested: PartitionedGlobalCacheConfig::try_from(
                 value.partitionedGlobalCacheRequested,
             )?,
-            partitioned_global_cache_executed: PartitionedGlobalCacheConfig::try_from_sys(
+            partitioned_global_cache_executed: PartitionedGlobalCacheConfig::try_from(
                 value.partitionedGlobalCacheExecuted,
             )?,
             start: value.start,
@@ -504,31 +310,6 @@ impl TryFrom<&sys::CUpti_ActivityKernel9> for KernelRecord {
             max_active_clusters: value.maxActiveClusters,
             channel_type: value.channelType.try_into()?,
         })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[repr(u32)]
-pub enum ChannelType {
-    Compute = sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_COMPUTE as u32,
-    AsyncMemcpy = sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_ASYNC_MEMCPY as u32,
-    Decomp = sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_DECOMP as u32,
-}
-
-impl TryFrom<sys::CUpti_ChannelType> for ChannelType {
-    type Error = CuptirError;
-
-    fn try_from(value: sys::CUpti_ChannelType) -> Result<Self, Self::Error> {
-        match value {
-            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_COMPUTE => Ok(Self::Compute),
-            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_ASYNC_MEMCPY => Ok(Self::AsyncMemcpy),
-            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_DECOMP => Ok(Self::Decomp),
-            sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_INVALID
-            | sys::CUpti_ChannelType::CUPTI_CHANNEL_TYPE_FORCE_INT => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
-        }
     }
 }
 
@@ -585,72 +366,11 @@ impl TryFrom<&sys::CUpti_ActivityMemcpy6> for MemcpyRecord {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[repr(u32)]
-pub enum MemoryOperationType {
-    Allocation =
-        sys::CUpti_ActivityMemoryOperationType::CUPTI_ACTIVITY_MEMORY_OPERATION_TYPE_ALLOCATION
-            as u32,
-    Release =
-        sys::CUpti_ActivityMemoryOperationType::CUPTI_ACTIVITY_MEMORY_OPERATION_TYPE_RELEASE as u32,
-}
-
-impl TryFrom<sys::CUpti_ActivityMemoryOperationType> for MemoryOperationType {
-    type Error = CuptirError;
-
-    fn try_from(value: sys::CUpti_ActivityMemoryOperationType) -> Result<Self, Self::Error> {
-        use sys::CUpti_ActivityMemoryOperationType as c;
-        match value {
-            c::CUPTI_ACTIVITY_MEMORY_OPERATION_TYPE_ALLOCATION => {
-                Ok(MemoryOperationType::Allocation)
-            }
-            c::CUPTI_ACTIVITY_MEMORY_OPERATION_TYPE_RELEASE => Ok(MemoryOperationType::Release),
-            c::CUPTI_ACTIVITY_MEMORY_OPERATION_TYPE_FORCE_INT
-            | c::CUPTI_ACTIVITY_MEMORY_OPERATION_TYPE_INVALID => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[repr(u32)]
-pub enum MemoryKind {
-    Pageable = sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_PAGEABLE as u32,
-    Pinned = sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_PINNED as u32,
-    Device = sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_DEVICE as u32,
-    Array = sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_ARRAY as u32,
-    Managed = sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_MANAGED as u32,
-    DeviceStatic = sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_DEVICE_STATIC as u32,
-    ManagedStatic = sys::CUpti_ActivityMemoryKind::CUPTI_ACTIVITY_MEMORY_KIND_MANAGED_STATIC as u32,
-}
-
-impl MemoryKind {
-    fn try_from_sys(value: sys::CUpti_ActivityMemoryKind) -> Result<Option<Self>, CuptirError> {
-        use sys::CUpti_ActivityMemoryKind as c;
-        Ok(match value {
-            c::CUPTI_ACTIVITY_MEMORY_KIND_UNKNOWN => None,
-            c::CUPTI_ACTIVITY_MEMORY_KIND_PAGEABLE => Some(MemoryKind::Pageable),
-            c::CUPTI_ACTIVITY_MEMORY_KIND_PINNED => Some(MemoryKind::Pinned),
-            c::CUPTI_ACTIVITY_MEMORY_KIND_DEVICE => Some(MemoryKind::Device),
-            c::CUPTI_ACTIVITY_MEMORY_KIND_ARRAY => Some(MemoryKind::Array),
-            c::CUPTI_ACTIVITY_MEMORY_KIND_MANAGED => Some(MemoryKind::Managed),
-            c::CUPTI_ACTIVITY_MEMORY_KIND_DEVICE_STATIC => Some(MemoryKind::DeviceStatic),
-            c::CUPTI_ACTIVITY_MEMORY_KIND_MANAGED_STATIC => Some(MemoryKind::ManagedStatic),
-            c::CUPTI_ACTIVITY_MEMORY_KIND_FORCE_INT => {
-                Err(CuptirError::SentinelEnum(value as u32))?
-            }
-        })
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct MemoryRecord {
     pub memory_operation_type: MemoryOperationType,
-    pub memory_kind: Option<MemoryKind>,
+    pub memory_kind: MemoryKind,
     pub correlation_id: u32,
     pub address: u64,
     pub bytes: u64,
@@ -674,7 +394,7 @@ impl TryFrom<&sys::CUpti_ActivityMemory4> for MemoryRecord {
     fn try_from(value: &sys::CUpti_ActivityMemory4) -> Result<Self, Self::Error> {
         Ok(MemoryRecord {
             memory_operation_type: value.memoryOperationType.try_into()?,
-            memory_kind: MemoryKind::try_from_sys(value.memoryKind)?,
+            memory_kind: MemoryKind::try_from(value.memoryKind)?,
             correlation_id: value.correlationId,
             address: value.address,
             bytes: value.bytes,
@@ -689,65 +409,6 @@ impl TryFrom<&sys::CUpti_ActivityMemory4> for MemoryRecord {
             pad1: value.pad1,
             source: unsafe { try_str_from_ffi(value.source) }.map(ToOwned::to_owned),
         })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[repr(u32)]
-pub enum MemoryPoolOperationType {
-    Created = sys::CUpti_ActivityMemoryPoolOperationType::CUPTI_ACTIVITY_MEMORY_POOL_OPERATION_TYPE_CREATED as u32,
-    Destroyed = sys::CUpti_ActivityMemoryPoolOperationType::CUPTI_ACTIVITY_MEMORY_POOL_OPERATION_TYPE_DESTROYED as u32,
-    Trimmed = sys::CUpti_ActivityMemoryPoolOperationType::CUPTI_ACTIVITY_MEMORY_POOL_OPERATION_TYPE_TRIMMED as u32,
-}
-
-impl TryFrom<sys::CUpti_ActivityMemoryPoolOperationType> for MemoryPoolOperationType {
-    type Error = CuptirError;
-
-    fn try_from(value: sys::CUpti_ActivityMemoryPoolOperationType) -> Result<Self, Self::Error> {
-        use sys::CUpti_ActivityMemoryPoolOperationType as c;
-        match value {
-            c::CUPTI_ACTIVITY_MEMORY_POOL_OPERATION_TYPE_CREATED => {
-                Ok(MemoryPoolOperationType::Created)
-            }
-            c::CUPTI_ACTIVITY_MEMORY_POOL_OPERATION_TYPE_DESTROYED => {
-                Ok(MemoryPoolOperationType::Destroyed)
-            }
-            c::CUPTI_ACTIVITY_MEMORY_POOL_OPERATION_TYPE_TRIMMED => {
-                Ok(MemoryPoolOperationType::Trimmed)
-            }
-            c::CUPTI_ACTIVITY_MEMORY_POOL_OPERATION_TYPE_FORCE_INT
-            | c::CUPTI_ACTIVITY_MEMORY_POOL_OPERATION_TYPE_INVALID => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[repr(u32)]
-pub enum MemoryPoolType {
-    Local = sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_LOCAL as u32,
-    Imported = sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_IMPORTED as u32,
-}
-
-impl TryFrom<sys::CUpti_ActivityMemoryPoolType> for MemoryPoolType {
-    type Error = CuptirError;
-
-    fn try_from(value: sys::CUpti_ActivityMemoryPoolType) -> Result<Self, Self::Error> {
-        match value {
-            sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_LOCAL => {
-                Ok(MemoryPoolType::Local)
-            }
-            sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_IMPORTED => {
-                Ok(MemoryPoolType::Imported)
-            }
-            sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_FORCE_INT
-            | sys::CUpti_ActivityMemoryPoolType::CUPTI_ACTIVITY_MEMORY_POOL_TYPE_INVALID => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
-        }
     }
 }
 

@@ -3,54 +3,14 @@ use std::sync::OnceLock;
 use cudarc::{cupti::result, cupti::sys};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use strum::FromRepr;
 
 use crate::{error::CuptirError, try_demangle_from_ffi, try_str_from_ffi};
 
 pub mod driver;
 pub mod runtime;
 
-#[derive(Clone, Copy, Debug, FromRepr, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[repr(u32)]
-pub enum Domain {
-    DriverApi = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_DRIVER_API as u32,
-    RuntimeApi = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_RUNTIME_API as u32,
-    Resource = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_RESOURCE as u32,
-    Synchronize = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_SYNCHRONIZE as u32,
-    Nvtx = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_NVTX as u32,
-    State = sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_STATE as u32,
-}
-
-impl From<Domain> for sys::CUpti_CallbackDomain {
-    #[rustfmt::skip]
-    fn from(value: Domain) -> Self {
-        use sys::CUpti_CallbackDomain as c;
-        match value {
-            Domain::DriverApi => c::CUPTI_CB_DOMAIN_DRIVER_API,
-            Domain::RuntimeApi => c::CUPTI_CB_DOMAIN_RUNTIME_API,
-            Domain::Resource => c::CUPTI_CB_DOMAIN_RESOURCE,
-            Domain::Synchronize => c::CUPTI_CB_DOMAIN_SYNCHRONIZE,
-            Domain::Nvtx => c::CUPTI_CB_DOMAIN_NVTX,
-            Domain::State => c::CUPTI_CB_DOMAIN_STATE
-        }
-    }
-}
-
-impl TryFrom<sys::CUpti_CallbackDomain> for Domain {
-    type Error = CuptirError;
-
-    fn try_from(value: sys::CUpti_CallbackDomain) -> Result<Self, Self::Error> {
-        match value {
-            sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_INVALID
-            | sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_SIZE
-            | sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_FORCE_INT => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
-            other => Self::from_repr(other as u32).ok_or(CuptirError::Corrupted),
-        }
-    }
-}
+pub type Domain = crate::enums::CallbackDomain;
+pub type Site = crate::enums::ApiCallbackSite;
 
 pub type CallbackHandlerFn =
     dyn Fn(Data) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync;
@@ -97,34 +57,12 @@ pub(crate) fn callback_name(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[repr(u32)]
-pub enum Site {
-    Enter = sys::CUpti_ApiCallbackSite::CUPTI_API_ENTER as u32,
-    Exit = sys::CUpti_ApiCallbackSite::CUPTI_API_EXIT as u32,
-}
-
-impl TryFrom<sys::CUpti_ApiCallbackSite> for Site {
-    type Error = CuptirError;
-
-    fn try_from(value: sys::CUpti_ApiCallbackSite) -> Result<Self, Self::Error> {
-        match value {
-            sys::CUpti_ApiCallbackSite::CUPTI_API_ENTER => Ok(Site::Enter),
-            sys::CUpti_ApiCallbackSite::CUPTI_API_EXIT => Ok(Site::Exit),
-            sys::CUpti_ApiCallbackSite::CUPTI_API_CBSITE_FORCE_INT => {
-                Err(CuptirError::SentinelEnum(value as u32))
-            }
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct DriverApiCallbackData {
     pub function: driver::Function,
     // TODO: figure out how to best serialize and expose this field in the public API
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub arguments: Option<driver::FunctionArguments>,
     pub site: Site,
     // pub function_name: Option<String>,
@@ -189,7 +127,7 @@ impl DriverApiCallbackData {
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct RuntimeApiCallbackData {
     pub function: runtime::Function,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub arguments: Option<runtime::FunctionArguments>,
     pub site: Site,
     // pub function_name: Option<String>,

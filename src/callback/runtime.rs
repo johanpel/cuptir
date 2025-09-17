@@ -1,4 +1,5 @@
 // TODO: cuda versioning
+// This is SUPER involved and we probably want to use code gen here.
 use cudarc::cupti::sys;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

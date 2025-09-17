@@ -30,6 +30,13 @@ serial_test = "3.2.0"
 serde_json = "1.0.143"
 colored = "3.0.0"
 
+[build-dependencies]
+bindgen = "0.72.1"
+syn = { version = "2.0.106", features = ["full"] }
+convert_case = "0.8.0"
+quote = "1.0.40"
+prettyplease = "0.2.37"
+
 [[example]]
 name = "candle"
 required-features = ["serde"]
