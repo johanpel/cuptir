@@ -26,6 +26,7 @@ pub type MemoryOperationType = crate::enums::ActivityMemoryOperationType;
 pub type MemoryPoolOperationType = crate::enums::ActivityMemoryPoolOperationType;
 pub type MemoryPoolType = crate::enums::ActivityMemoryPoolType;
 pub type PartitionedGlobalCacheConfig = crate::enums::ActivityPartitionedGlobalCacheConfig;
+pub type UnifiedMemoryCounterKind = crate::enums::ActivityUnifiedMemoryCounterKind;
 
 /// Default CUPTI buffer size.
 ///
@@ -458,6 +459,44 @@ impl TryFrom<&sys::CUpti_ActivityMemoryPool2> for MemoryPoolRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+pub struct UnifiedMemoryCounterRecord {
+    pub counter_kind: UnifiedMemoryCounterKind,
+    pub value: u64,
+    pub start: u64,
+    pub end: u64,
+    pub address: u64,
+    pub src_id: u32,
+    pub dst_id: u32,
+    pub stream_id: u32,
+    pub process_id: u32,
+    pub flags: u32,
+    pub pad: u32,
+    pub processors: [u64; 5usize],
+}
+
+impl TryFrom<&sys::CUpti_ActivityUnifiedMemoryCounter3> for UnifiedMemoryCounterRecord {
+    type Error = CuptirError;
+
+    fn try_from(value: &sys::CUpti_ActivityUnifiedMemoryCounter3) -> Result<Self, Self::Error> {
+        Ok(UnifiedMemoryCounterRecord {
+            counter_kind: value.counterKind.try_into()?,
+            value: value.value,
+            start: value.start,
+            end: value.end,
+            address: value.address,
+            src_id: value.srcId,
+            dst_id: value.dstId,
+            stream_id: value.streamId,
+            process_id: value.processId,
+            flags: value.flags,
+            pad: value.pad,
+            processors: value.processors,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub enum Record {
     DriverApi(DriverApiRecord),
     RuntimeApi(RuntimeApiRecord),
@@ -466,6 +505,7 @@ pub enum Record {
     Memcpy(MemcpyRecord),
     Memory(MemoryRecord),
     MemoryPool(MemoryPoolRecord),
+    UnifiedMemoryCounter(UnifiedMemoryCounterRecord),
 }
 
 impl Record {
@@ -522,6 +562,13 @@ impl Record {
                 let memory_pool_record =
                     unsafe { &*(record_ptr as *const sys::CUpti_ActivityMemoryPool2) };
                 Ok(Record::MemoryPool(memory_pool_record.try_into()?))
+            }
+            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER => {
+                let unified_memory_counter_record =
+                    unsafe { &*(record_ptr as *const sys::CUpti_ActivityUnifiedMemoryCounter3) };
+                Ok(Record::UnifiedMemoryCounter(
+                    unified_memory_counter_record.try_into()?,
+                ))
             }
             _ => {
                 trace!("unimplemented activity kind: {kind:?}");
