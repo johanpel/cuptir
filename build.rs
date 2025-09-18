@@ -144,6 +144,18 @@ fn generate_safe_enums(source: &syn::File) -> TokenStream {
                                 unsafe { std::mem::transmute::<u32, Self>(value as u32) }
                             }
                         }
+
+                        impl From<#tgt_enum_ident> for u32 {
+                            fn from(value: #tgt_enum_ident) -> Self {
+                                value as u32
+                            }
+                        }
+
+                        impl From<&#tgt_enum_ident> for u32 {
+                            fn from(value: &#tgt_enum_ident) -> Self {
+                                (*value) as u32
+                            }
+                        }
                     };
 
                     let enum_decl = quote! {

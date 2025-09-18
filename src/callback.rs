@@ -1,18 +1,22 @@
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use cudarc::{cupti::result, cupti::sys};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use tracing::trace;
 
-use crate::{error::CuptirError, try_demangle_from_ffi, try_str_from_ffi};
-
-pub mod driver;
-pub mod runtime;
+use crate::{
+    driver,
+    error::CuptirError,
+    runtime,
+    utils::{try_demangle_from_ffi, try_str_from_ffi},
+};
 
 pub type Domain = crate::enums::CallbackDomain;
 pub type Site = crate::enums::ApiCallbackSite;
 
-pub type CallbackHandlerFn =
+pub type HandlerFn =
     dyn Fn(Data) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync;
 
 /// Globally accessible handler for callbacks from the CUPTI Callback API.
@@ -20,20 +24,18 @@ pub type CallbackHandlerFn =
 /// Because the buffer complete callback doesn't have a way of passing custom data, e.g.
 /// a reference to the Context, this is needed to get to the Rust callback for  record
 /// processing.
-pub(crate) static CALLBACK_HANDLER: OnceLock<Box<CallbackHandlerFn>> = OnceLock::new();
+static HANDLER: OnceLock<Box<HandlerFn>> = OnceLock::new();
 
 /// Sets the activity record handler. This can be only called once.
-pub(crate) fn set_callback_handler(
-    callback_handler: Box<CallbackHandlerFn>,
-) -> Result<(), CuptirError> {
-    CALLBACK_HANDLER
-        .set(callback_handler)
+fn set_handler(handler: Box<HandlerFn>) -> Result<(), CuptirError> {
+    HANDLER
+        .set(handler)
         .map_err(|_| CuptirError::CallbackHandler("can only be set once".into()))
 }
 
 /// Calls the global record handler function if it is installed.
 fn handle_callback(callback: Data) -> Result<(), CuptirError> {
-    if let Some(handler) = CALLBACK_HANDLER.get() {
+    if let Some(handler) = HANDLER.get() {
         handler(callback).map_err(|e| CuptirError::CallbackHandler(e.to_string()))
     } else {
         tracing::warn!("callback received, but no callback handler is installed");
@@ -236,6 +238,191 @@ pub(crate) unsafe extern "C" fn handler(
             Err(error) => {
                 tracing::warn!("cupti callback data conversion error: {error}")
             }
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Builder {
+    enabled_domains: HashSet<Domain>,
+    enabled_driver_functions: HashSet<driver::Function>,
+    enabled_runtime_functions: HashSet<runtime::Function>,
+    handler: Option<Box<HandlerFn>>,
+}
+
+impl Builder {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Add the supplied domains to the set of activated callback domains.
+    ///
+    /// Note this enables all callbacks in the specified domain and should be used with
+    /// care.
+    pub fn with_domains(mut self, domains: impl IntoIterator<Item = Domain>) -> Self {
+        self.enabled_domains.extend(domains);
+        self
+    }
+
+    pub fn with_driver_functions(
+        mut self,
+        callbacks: impl IntoIterator<Item = driver::Function>,
+    ) -> Self {
+        self.enabled_driver_functions.extend(callbacks);
+        self
+    }
+
+    pub fn with_runtime_functions(
+        mut self,
+        callbacks: impl IntoIterator<Item = runtime::Function>,
+    ) -> Self {
+        self.enabled_runtime_functions.extend(callbacks);
+        self
+    }
+
+    /// Set the handler for the Callback API.
+    ///
+    /// The handler function should return as quickly as possible to minimize profiling
+    /// overhead.
+    pub fn with_handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(Data) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync + 'static,
+    {
+        self.handler = Some(Box::new(handler));
+        self
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Context {
+    subscriber_handle: sys::CUpti_SubscriberHandle,
+    user_data: *mut std::ffi::c_void,
+
+    enabled_domains: Vec<Domain>,
+    enabled_driver_functions: Vec<driver::Function>,
+    enabled_runtime_functions: Vec<runtime::Function>,
+}
+
+impl Builder {
+    /// Build the [Context].
+    ///
+    /// This function can fail if there is another Context or any other type of CUPTI
+    /// subscriber.
+    pub(crate) fn build(self) -> Result<Context, CuptirError> {
+        let mut context = Context {
+            subscriber_handle: std::ptr::null_mut(),
+            user_data: std::ptr::null_mut(),
+
+            enabled_domains: self.enabled_domains.into_iter().collect(),
+            enabled_driver_functions: self.enabled_driver_functions.into_iter().collect(),
+            enabled_runtime_functions: self.enabled_runtime_functions.into_iter().collect(),
+        };
+
+        // Subscribe. This can fail if theres some other thing trying to use CUPTI
+        // already, which is a requirement that is recommended to be checked before
+        // doing anything else. So even if we don't use the Callback API we still
+        // need to pass a handler.
+        let anything_enabled = !(context.enabled_domains.is_empty()
+            && context.enabled_driver_functions.is_empty()
+            && context.enabled_runtime_functions.is_empty());
+        if let Some(client_handler) = self.handler {
+            if !anything_enabled {
+                return Err(CuptirError::Builder(
+                    "callback handler provided, but no callback domains or functions were enabled"
+                        .to_string(),
+                ));
+            } else {
+                set_handler(client_handler)?;
+                trace!("subscribing");
+                unsafe {
+                    result::subscribe(
+                        &mut context.subscriber_handle,
+                        Some(handler),
+                        context.user_data as *mut _,
+                    )?;
+                }
+            }
+        } else if anything_enabled {
+            return Err(CuptirError::Builder(
+                "callback domains and/or functions are enabled, but no callback handler is set"
+                    .into(),
+            ));
+        } else {
+            // No callbacks were enabled and neither was handler installed, but cupti
+            // clients are supposed to subscribe, so we subscribe without any handler.
+            unsafe {
+                trace!("subscribing");
+                result::subscribe(
+                    &mut context.subscriber_handle,
+                    None,
+                    context.user_data as *mut _,
+                )?;
+            }
+        }
+
+        // Enable the callback domains, if needed.
+        if !context.enabled_domains.is_empty() {
+            trace!("enabling callback domains: {:?}", context.enabled_domains);
+            context
+                .enabled_domains
+                .iter()
+                .try_for_each(|domain| unsafe {
+                    result::enable_domain(1, context.subscriber_handle, (*domain).into())
+                })?;
+        }
+
+        // Enable the callback for specific driver and runtime API functions
+        if !context.enabled_driver_functions.is_empty() {
+            trace!(
+                "enabling callback for driver functions: {:?}",
+                context.enabled_driver_functions
+            );
+            context
+                .enabled_driver_functions
+                .iter()
+                .try_for_each(|api| unsafe {
+                    result::enable_callback(
+                        1,
+                        context.subscriber_handle,
+                        sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_DRIVER_API,
+                        (*api) as u32,
+                    )
+                })?;
+        }
+
+        if !context.enabled_runtime_functions.is_empty() {
+            trace!(
+                "enabling callback for runtime functions: {:?}",
+                context.enabled_runtime_functions
+            );
+            context
+                .enabled_runtime_functions
+                .iter()
+                .try_for_each(|api| unsafe {
+                    result::enable_callback(
+                        1,
+                        context.subscriber_handle,
+                        sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_RUNTIME_API,
+                        (*api) as u32,
+                    )
+                })?;
+        }
+
+        Ok(context)
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        if !self.subscriber_handle.is_null() {
+            trace!("unsubscribing");
+            if let Err(error) = unsafe { result::unsubscribe(self.subscriber_handle) } {
+                tracing::warn!("unable to unsubscribe: {error}");
+            }
+        }
+
+        if !self.user_data.is_null() {
+            let _user_data = unsafe { Box::from_raw(self.user_data as *mut usize) };
         }
     }
 }

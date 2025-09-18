@@ -1,7 +1,10 @@
 use std::fs::File;
 
 use colored::Colorize;
-use cuptir::callback::{self, driver::FunctionParams};
+use cuptir::{
+    callback::{self},
+    driver,
+};
 use tracing::level_filters::LevelFilter;
 
 /// This example shows how to use the CUPTI Activity API wrappers, as well as the CUPTI
@@ -23,10 +26,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // do something similar to the below if you care about performance. Especially for
     // the buffers of the activity API. It is recommended to hand them off to some
     // asynchronous processing logic.
-    let _cuptir = cuptir::Context::builder()
-        .with_activity_kinds([cuptir::activity::Kind::ConcurrentKernel])
-        .enable_activity_latency_timestamps(true)
-        .with_activity_record_buffer_handler(move |buffer| {
+    let activity = cuptir::activity::Builder::new()
+        .with_kinds([cuptir::activity::Kind::ConcurrentKernel])
+        .latency_timestamps(true)
+        .with_record_buffer_handler(move |buffer| {
             buffer.into_iter().try_for_each(|record| {
                 match record {
                     Ok(r) => match serde_json::to_string(&r) {
@@ -38,51 +41,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok::<(), cuptir::error::CuptirError>(())
             })?;
             Ok(())
-        })
-        // We could enable callbacks for all APIs from a domains at once as follows:
-        // .with_callback_domains([callback::Domain::RuntimeApi, callback::Domain::DriverApi])
-        // However, this is very spammy.
-        //
-        // Instead, enable single callbacks of interest, e.g.:
-        .with_callbacks_for_driver([
-            callback::driver::Function::cuMemcpyDtoHAsync_v2,
-            callback::driver::Function::cuLaunchKernel,
+        });
+
+    let callback = cuptir::callback::Builder::new()
+        .with_driver_functions([
+            driver::Function::cuMemcpyDtoHAsync_v2,
+            driver::Function::cuLaunchKernel,
         ])
-        .with_callback_handler(move |data| {
+        .with_handler(move |data| {
             match data {
-                callback::Data::DriverApi(callback_data) => {
-                    if callback_data.site == callback::Site::Exit {
-                        match callback_data.arguments {
-                            Some(FunctionParams::cuMemcpyDtoHAsync_v2(params)) => {
-                                let params: &cuptir::sys::cuMemcpyDtoHAsync_v2_params_st =
-                                    unsafe { &*params };
-                                println!(
-                                    "{}: {}, bytes: {}",
-                                    "callback".purple(),
-                                    callback_data.function_name().unwrap(),
-                                    params.ByteCount,
-                                );
-                            }
-                            Some(FunctionParams::cuLaunchKernel(params)) => {
-                                let params: &cuptir::sys::cuLaunchKernel_params =
-                                    unsafe { &*params };
-                                print!(
-                                    "{}: kernel launched\n\tname: {}\n\tblock dims: {}, {}, {}\n",
-                                    "callback".purple(),
-                                    callback_data.symbol_name.unwrap_or_default(),
-                                    params.blockDimX,
-                                    params.blockDimY,
-                                    params.blockDimZ
-                                );
-                            }
-                            _ => (),
-                        }
+                callback::Data::DriverApi(callback_data) => match callback_data.arguments {
+                    Some(driver::FunctionParams::cuMemcpyDtoHAsync_v2(params)) => {
+                        let params: &cuptir::cudarc::cupti::sys::cuMemcpyDtoHAsync_v2_params_st =
+                            unsafe { &*params };
+                        println!(
+                            "{}: {}, bytes: {}, site: {:?}, correlation id: {}",
+                            "callback".purple(),
+                            callback_data.function_name().unwrap(),
+                            params.ByteCount,
+                            callback_data.site,
+                            callback_data.correlation_id
+                        );
                     }
-                }
+                    Some(driver::FunctionParams::cuLaunchKernel(params)) => {
+                        let params: &cuptir::cudarc::cupti::sys::cuLaunchKernel_params =
+                            unsafe { &*params };
+                        print!(
+                            "{}: kernel launched\n\tname: {}\n\tblock dims: {}, {}, {}\n",
+                            "callback".purple(),
+                            callback_data.symbol_name.unwrap_or_default(),
+                            params.blockDimX,
+                            params.blockDimY,
+                            params.blockDimZ
+                        );
+                    }
+                    _ => (),
+                },
                 _ => (),
             };
             Ok(())
-        })
+        });
+
+    let _context = cuptir::ContextBuilder::new()
+        .with_activity(activity)
+        .with_callback(callback)
         .build()?;
 
     // CUDA usage goes here, e.g. the example from the Candle crate:

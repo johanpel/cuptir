@@ -1,14 +1,22 @@
 use std::{
     alloc::{Layout, alloc, dealloc},
+    collections::HashSet,
+    num::NonZero,
     sync::OnceLock,
 };
 
-use cudarc::cupti::{result as cupti, sys};
+use cudarc::cupti::{result, sys};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
 
-use crate::{callback::callback_name, error::CuptirError, try_demangle_from_ffi, try_str_from_ffi};
+use crate::{
+    callback::callback_name,
+    driver,
+    error::CuptirError,
+    runtime,
+    utils::{try_demangle_from_ffi, try_str_from_ffi},
+};
 
 pub type ChannelType = crate::enums::ChannelType;
 pub type FuncShmemLimitConfig = crate::enums::FuncShmemLimitConfig;
@@ -87,7 +95,7 @@ impl Iterator for RecordBufferIterator {
         // Safety: the buffer can only be constructed with a non-null ptr, plus CUPTI
         // would return a graceful error if it were null.
         let result = unsafe {
-            cupti::activity::get_next_record(
+            result::activity::get_next_record(
                 self.buffer.ptr,
                 self.buffer.valid_size,
                 &mut self.current_record_ptr,
@@ -557,5 +565,291 @@ pub(crate) extern "C" fn buffer_complete_callback(
         RecordBuffer::try_new(buffer, size, valid_size).and_then(handle_record_buffer)
     {
         warn!("processing activity buffer failed: {error}");
+    }
+}
+
+#[derive(Default)]
+pub struct Builder {
+    enabled_kinds: HashSet<Kind>,
+
+    enabled_driver_functions: HashSet<driver::Function>,
+    disabled_driver_functions: HashSet<driver::Function>,
+
+    enabled_runtime_functions: HashSet<runtime::Function>,
+    disabled_runtime_functions: HashSet<runtime::Function>,
+
+    record_buffer_handler: Option<Box<RecordBufferHandlerFn>>,
+
+    latency_timestamps: bool,
+    flush_period: Option<NonZero<u32>>,
+}
+
+#[derive(Debug, Default)]
+pub struct Context {
+    enabled_kinds: Vec<Kind>,
+    enabled_driver_functions: Vec<driver::Function>,
+    enabled_runtime_functions: Vec<runtime::Function>,
+}
+
+impl Builder {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Add the supplied activity kinds to the set of activated activity kinds.
+    pub fn with_kinds(mut self, kinds: impl IntoIterator<Item = Kind>) -> Self {
+        self.enabled_kinds.extend(kinds);
+        self
+    }
+
+    /// Enable the collection of activity records for the supplied driver API functions.
+    pub fn with_driver_functions(
+        mut self,
+        functions: impl IntoIterator<Item = driver::Function>,
+    ) -> Self {
+        self.enabled_driver_functions.extend(functions);
+        self
+    }
+
+    /// Disable the collection of activity records for the supplied driver API functions.
+    pub fn without_driver_functions(
+        mut self,
+        functions: impl IntoIterator<Item = driver::Function>,
+    ) -> Self {
+        self.disabled_driver_functions.extend(functions);
+        self
+    }
+
+    /// Enable the collection of activity records for the supplied driver API functions.
+    pub fn with_runtime_functions(
+        mut self,
+        functions: impl IntoIterator<Item = runtime::Function>,
+    ) -> Self {
+        self.enabled_runtime_functions.extend(functions);
+        self
+    }
+
+    /// Disable the collection of activity records for the supplied driver API functions.
+    pub fn without_runtime_functions(
+        mut self,
+        functions: impl IntoIterator<Item = runtime::Function>,
+    ) -> Self {
+        self.enabled_runtime_functions.extend(functions);
+        self
+    }
+
+    /// Set the activity record buffer handler function.
+    ///
+    /// The handler function should return as quickly as possible to minimize profiling
+    /// overhead.
+    pub fn with_record_buffer_handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(RecordBuffer) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.record_buffer_handler = Some(Box::new(handler));
+        self
+    }
+
+    /// Set whether latency timestamps should be enabled, which deliver the `queued` and
+    /// `submitted` fields for [activity::KernelRecord] event records.
+    ///
+    /// Disabled by default.
+    pub fn latency_timestamps(mut self, enabled: bool) -> Self {
+        self.latency_timestamps = enabled;
+        self
+    }
+
+    /// Set the flush period in milliseconds for the underlying CUPTI worker thread.
+    ///  
+    /// If interval is None, use CUPTI's internal heuristics to determine when to flush,
+    /// which is the default mode of operation.
+    pub fn flush_period(mut self, milliseconds: Option<NonZero<u32>>) -> Self {
+        self.flush_period = milliseconds;
+        self
+    }
+
+    fn toggle_activity<T, F>(
+        which: &str,
+        items: &[T],
+        enable_func: F,
+        enable: bool,
+    ) -> Result<(), CuptirError>
+    where
+        u32: From<T>,
+        T: Copy + std::fmt::Debug,
+        F: Fn(u32, u8) -> Result<(), result::CuptiError>,
+    {
+        if !items.is_empty() {
+            trace!(
+                "{} activity record collection for {} functions: {:?}",
+                if enable { "enabling" } else { "disabling" },
+                which,
+                items
+            );
+            items.iter().try_for_each(|cupti_func| {
+                enable_func(u32::from(*cupti_func), if enable { 1 } else { 0 })
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn build(self) -> Result<Option<Context>, CuptirError> {
+        let anything_enabled = !(self.enabled_kinds.is_empty()
+            && self.enabled_driver_functions.is_empty()
+            && self.enabled_runtime_functions.is_empty());
+
+        if anything_enabled {
+            if let Some(record_buffer_handler) = self.record_buffer_handler {
+                trace!("registering activity buffer callbacks");
+                set_record_buffer_handler(record_buffer_handler)?;
+                result::activity::register_callbacks(
+                    Some(buffer_requested_callback),
+                    Some(buffer_complete_callback),
+                )?;
+            } else {
+                return Err(CuptirError::Builder(
+                    "collection of activity kinds or functions was enabled but no record buffer handler was set".into(),
+                ));
+            }
+
+            if self.latency_timestamps {
+                trace!("enabling latency timestamps for activity records");
+                result::activity::enable_latency_timestamps(1)?;
+            }
+
+            if let Some(interval) = self.flush_period {
+                trace!("setting activity buffer flush period to {interval}");
+                result::activity::flush_period(interval.into())?;
+            }
+
+            let enabled_kinds: Vec<_> = self.enabled_kinds.into_iter().collect();
+
+            if !enabled_kinds.is_empty() {
+                trace!(
+                    "enabling activity record collection for kinds: {:?}",
+                    enabled_kinds
+                );
+                enabled_kinds.iter().try_for_each(|activity_kind| {
+                    result::activity::enable((*activity_kind).into())
+                })?;
+            }
+
+            let enabled_driver_functions = self
+                .enabled_driver_functions
+                .into_iter()
+                .collect::<Vec<_>>();
+            let enabled_runtime_functions = self
+                .enabled_runtime_functions
+                .into_iter()
+                .collect::<Vec<_>>();
+
+            Self::toggle_activity(
+                "driver",
+                enabled_driver_functions.as_slice(),
+                result::activity::enable_driver_api,
+                true,
+            )?;
+            Self::toggle_activity(
+                "driver",
+                self.disabled_driver_functions
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                result::activity::enable_driver_api,
+                false,
+            )?;
+            Self::toggle_activity(
+                "runtime",
+                enabled_runtime_functions.as_slice(),
+                result::activity::enable_runtime_api,
+                true,
+            )?;
+            Self::toggle_activity(
+                "runtime",
+                self.disabled_runtime_functions
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                result::activity::enable_runtime_api,
+                false,
+            )?;
+
+            Ok(Some(Context {
+                enabled_kinds,
+                enabled_driver_functions,
+                enabled_runtime_functions,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl Context {
+    /// Request to deliver activity records via the buffer completion callback.
+    ///
+    /// When forced is false, only complete records are flushed.
+    /// When forced is true, incomplete records may be flushed.
+    pub fn flush_all(forced: bool) -> Result<(), CuptirError> {
+        trace!("flushing activity buffer");
+        result::activity::flush_all(if forced {
+            sys::CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_FLUSH_FORCED as u32
+        } else {
+            0
+        })?;
+        Ok(())
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        if let Err(error) = Self::flush_all(true) {
+            warn!("unable to flush activity buffer: {error}")
+        }
+
+        if !self.enabled_kinds.is_empty() {
+            trace!(
+                "disabling activity record collection for kinds: {:?}",
+                self.enabled_kinds
+            );
+            if let Err(error) = self
+                .enabled_kinds
+                .iter()
+                .try_for_each(|activity_kind| result::activity::disable((*activity_kind).into()))
+            {
+                warn!("unable to disable activity kind: {error}");
+            }
+        }
+
+        if !self.enabled_driver_functions.is_empty() {
+            trace!(
+                "disabling activity record collection for functions: {:?}",
+                self.enabled_driver_functions
+            );
+            if let Err(error) = self
+                .enabled_driver_functions
+                .iter()
+                .try_for_each(|func| result::activity::enable_driver_api(func.into(), 0))
+            {
+                warn!("unable to disable activity for driver function: {error}");
+            }
+        }
+
+        if !self.enabled_runtime_functions.is_empty() {
+            trace!(
+                "disabling activity record collection for runtime functions: {:?}",
+                self.enabled_runtime_functions
+            );
+            if let Err(error) = self
+                .enabled_runtime_functions
+                .iter()
+                .try_for_each(|func| result::activity::enable_runtime_api(func.into(), 0))
+            {
+                warn!("unable to disable activity for runtime function: {error}");
+            }
+        }
     }
 }
