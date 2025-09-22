@@ -799,7 +799,8 @@ impl Builder {
     pub(crate) fn build(self) -> Result<Option<Context>, CuptirError> {
         let anything_enabled = !(self.enabled_kinds.is_empty()
             && self.enabled_driver_functions.is_empty()
-            && self.enabled_runtime_functions.is_empty());
+            && self.enabled_runtime_functions.is_empty()
+            && self.unified_memory_counter_configs.is_empty());
 
         if anything_enabled {
             if let Some(record_buffer_handler) = self.record_buffer_handler {

@@ -55,7 +55,8 @@ impl Context {
             activity.enable_unified_memory_counters()
         } else {
             Err(CuptirError::Activity(
-                "activity context is not initialized".into(),
+                "enabling unified memory counters requires initializing with an activity api context"
+                    .into(),
             ))
         }
     }
