@@ -14,8 +14,10 @@ pub enum CuptirError {
     CuptiNotSupported,
     #[error("unexpected sentinel enum variant: {0}")]
     SentinelEnum(u32),
-    #[error("acivity record buffer handler: {0}")]
+    #[error("activity record buffer handler: {0}")]
     ActivityRecordBufferHandler(String),
+    #[error("activity error: {0}")]
+    Activity(String),
     #[error("callback handler: {0}")]
     CallbackHandler(String),
     #[error("demangle: {0}")]

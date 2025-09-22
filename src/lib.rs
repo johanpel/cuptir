@@ -30,7 +30,7 @@ pub mod function_params {
 // TODO: probably split this out over multiple contexts, one per CUPTI module
 #[derive(Debug)]
 pub struct Context {
-    _activity: Option<activity::Context>,
+    activity: Option<activity::Context>,
 
     // This needs to be dropped last, so this field should be the last field of this
     // struct.
@@ -40,6 +40,24 @@ pub struct Context {
 impl Context {
     pub fn builder() -> ContextBuilder {
         Default::default()
+    }
+
+    /// Enable the unified memory counters of the activity API set when building the
+    /// context.
+    ///
+    /// This can only be performed after CUDA driver initialization, hence it is not
+    /// performed when using [ContextBuilder::build].
+    ///
+    /// This requires the activity context to be initialized, see
+    /// [ContextBuilder::with_activity].
+    pub fn enable_activity_unified_memory_counters(&self) -> Result<(), CuptirError> {
+        if let Some(activity) = &self.activity {
+            activity.enable_unified_memory_counters()
+        } else {
+            Err(CuptirError::Activity(
+                "activity context is not initialized".into(),
+            ))
+        }
     }
 }
 
@@ -55,11 +73,13 @@ impl ContextBuilder {
         Default::default()
     }
 
+    /// Enable the CUPTI activity API, see [activity].
     pub fn with_activity(mut self, builder: activity::Builder) -> Self {
         self.activity = Some(builder);
         self
     }
 
+    /// Enable the CUPTI callback API, see [callback].
     pub fn with_callback(mut self, builder: callback::Builder) -> Self {
         self.callback = Some(builder);
         self
@@ -81,7 +101,7 @@ impl ContextBuilder {
         };
 
         Ok(Context {
-            _activity: activity,
+            activity,
             _callback: callback,
         })
     }

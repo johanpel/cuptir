@@ -2,6 +2,9 @@ use std::fs::File;
 
 use colored::Colorize;
 use cuptir::{
+    activity::{
+        self, UnifiedMemoryCounterConfig, UnifiedMemoryCounterKind, UnifiedMemoryCounterScope,
+    },
     callback::{self},
     driver,
 };
@@ -26,8 +29,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // do something similar to the below if you care about performance. Especially for
     // the buffers of the activity API. It is recommended to hand them off to some
     // asynchronous processing logic.
-    let activity = cuptir::activity::Builder::new()
-        .with_kinds([cuptir::activity::Kind::ConcurrentKernel])
+    let activity = activity::Builder::new()
+        .with_kinds([activity::Kind::ConcurrentKernel])
+        .with_unified_memory_counter_configs([
+            UnifiedMemoryCounterConfig {
+                scope: UnifiedMemoryCounterScope::ProcessSingleDevice,
+                kind: UnifiedMemoryCounterKind::BytesTransferHtod,
+                device_id: 0,
+                enable: true,
+            },
+            UnifiedMemoryCounterConfig {
+                scope: UnifiedMemoryCounterScope::ProcessSingleDevice,
+                kind: UnifiedMemoryCounterKind::BytesTransferDtoh,
+                device_id: 0,
+                enable: true,
+            },
+        ])
         .latency_timestamps(true)
         .with_record_buffer_handler(move |buffer| {
             buffer.into_iter().try_for_each(|record| {
@@ -82,13 +99,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         });
 
-    let _context = cuptir::ContextBuilder::new()
+    let context = cuptir::ContextBuilder::new()
         .with_activity(activity)
         .with_callback(callback)
         .build()?;
 
     // CUDA usage goes here, e.g. the example from the Candle crate:
     let device = candle_core::Device::new_cuda(0)?;
+    // TODO: not use candle
+
+    // This must be done after driver initialization.
+    context.enable_activity_unified_memory_counters()?;
+
     let a = candle_core::Tensor::randn(0f32, 1., (2, 3), &device)?;
     let b = candle_core::Tensor::randn(0f32, 1., (3, 4), &device)?;
     let c = a.matmul(&b)?;

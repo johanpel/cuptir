@@ -26,6 +26,7 @@ pub type MemoryOperationType = crate::enums::ActivityMemoryOperationType;
 pub type MemoryPoolOperationType = crate::enums::ActivityMemoryPoolOperationType;
 pub type MemoryPoolType = crate::enums::ActivityMemoryPoolType;
 pub type PartitionedGlobalCacheConfig = crate::enums::ActivityPartitionedGlobalCacheConfig;
+pub type UnifiedMemoryCounterScope = crate::enums::ActivityUnifiedMemoryCounterScope;
 pub type UnifiedMemoryCounterKind = crate::enums::ActivityUnifiedMemoryCounterKind;
 
 /// Default CUPTI buffer size.
@@ -458,6 +459,25 @@ impl TryFrom<&sys::CUpti_ActivityMemoryPool2> for MemoryPoolRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct UnifiedMemoryCounterConfig {
+    pub scope: UnifiedMemoryCounterScope,
+    pub kind: UnifiedMemoryCounterKind,
+    pub device_id: u32,
+    pub enable: bool,
+}
+
+impl From<UnifiedMemoryCounterConfig> for sys::CUpti_ActivityUnifiedMemoryCounterConfig {
+    fn from(value: UnifiedMemoryCounterConfig) -> Self {
+        sys::CUpti_ActivityUnifiedMemoryCounterConfig {
+            scope: value.scope.into(),
+            kind: value.kind.into(),
+            deviceId: value.device_id,
+            enable: if value.enable { 1 } else { 0 },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct UnifiedMemoryCounterRecord {
     pub counter_kind: UnifiedMemoryCounterKind,
@@ -628,6 +648,11 @@ pub struct Builder {
     record_buffer_handler: Option<Box<RecordBufferHandlerFn>>,
 
     latency_timestamps: bool,
+    allocation_source: bool,
+    disable_all_sync_records: bool,
+
+    unified_memory_counter_configs: HashSet<UnifiedMemoryCounterConfig>,
+
     flush_period: Option<NonZero<u32>>,
 }
 
@@ -636,6 +661,8 @@ pub struct Context {
     enabled_kinds: Vec<Kind>,
     enabled_driver_functions: Vec<driver::Function>,
     enabled_runtime_functions: Vec<runtime::Function>,
+
+    unified_memory_counter_configs: Vec<sys::CUpti_ActivityUnifiedMemoryCounterConfig>,
 }
 
 impl Builder {
@@ -709,6 +736,32 @@ impl Builder {
         self
     }
 
+    /// Set whether to enables tracking the source library for memory allocation
+    /// requests.
+    ///
+    /// Disabled by default.
+    pub fn allocation_source(mut self, enabled: bool) -> Self {
+        self.allocation_source = enabled;
+        self
+    }
+
+    /// Set whether to enable collecting records for all synchronization operations.
+    ///
+    /// Enabled by default.
+    pub fn all_sync_records(mut self, enabled: bool) -> Self {
+        self.disable_all_sync_records = !enabled;
+        self
+    }
+
+    /// Set the unified memory counter configurations.
+    pub fn with_unified_memory_counter_configs(
+        mut self,
+        configs: impl IntoIterator<Item = UnifiedMemoryCounterConfig>,
+    ) -> Self {
+        self.unified_memory_counter_configs.extend(configs);
+        self
+    }
+
     /// Set the flush period in milliseconds for the underlying CUPTI worker thread.
     ///  
     /// If interval is None, use CUPTI's internal heuristics to determine when to flush,
@@ -763,8 +816,19 @@ impl Builder {
             }
 
             if self.latency_timestamps {
-                trace!("enabling latency timestamps for activity records");
+                trace!("enabling latency timestamps");
                 result::activity::enable_latency_timestamps(1)?;
+            }
+            if self.allocation_source {
+                trace!("enabling allocation source tracking");
+                result::activity::enable_allocation_source(1)?;
+            }
+            if self.disable_all_sync_records {
+                trace!("disabling all sync records collection");
+                result::activity::enable_all_sync_records(0)?;
+            } else {
+                trace!("enable all sync records collection");
+                result::activity::enable_all_sync_records(0)?;
             }
 
             if let Some(interval) = self.flush_period {
@@ -779,8 +843,19 @@ impl Builder {
                     "enabling activity record collection for kinds: {:?}",
                     enabled_kinds
                 );
-                enabled_kinds.iter().try_for_each(|activity_kind| {
-                    result::activity::enable((*activity_kind).into())
+                enabled_kinds.iter().try_for_each(|kind| {
+                    // CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER can only be enabled
+                    // after driver initialization, otherwise enabling it here results
+                    // in a CUPTI_ERROR_NOT_READY. Error out here to inform the client
+                    // code about what they should do instead.
+                    //
+                    // TODO: We may be able to do this automatically for the
+                    // client based on callbacks in the future.
+                    if *kind == Kind::UnifiedMemoryCounter {
+                        Err(CuptirError::Builder("enabling unified memory counter activity records must be performed explicitly after CUDA driver initialization through the crate-level Context".into()))
+                    } else {
+                        Ok(result::activity::enable((*kind).into())?)
+                    }
                 })?;
             }
 
@@ -828,6 +903,11 @@ impl Builder {
                 enabled_kinds,
                 enabled_driver_functions,
                 enabled_runtime_functions,
+                unified_memory_counter_configs: self
+                    .unified_memory_counter_configs
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
             }))
         } else {
             Ok(None)
@@ -840,7 +920,7 @@ impl Context {
     ///
     /// When forced is false, only complete records are flushed.
     /// When forced is true, incomplete records may be flushed.
-    pub fn flush_all(forced: bool) -> Result<(), CuptirError> {
+    pub(crate) fn flush_all(forced: bool) -> Result<(), CuptirError> {
         trace!("flushing activity buffer");
         result::activity::flush_all(if forced {
             sys::CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_FLUSH_FORCED as u32
@@ -848,6 +928,21 @@ impl Context {
             0
         })?;
         Ok(())
+    }
+
+    pub(crate) fn enable_unified_memory_counters(&self) -> Result<(), CuptirError> {
+        if !self.unified_memory_counter_configs.is_empty() {
+            unsafe {
+                sys::cuptiActivityConfigureUnifiedMemoryCounter(
+                    self.unified_memory_counter_configs.as_ptr() as *mut _,
+                    self.unified_memory_counter_configs.len() as u32,
+                )
+            }
+            .result()?;
+            Ok(result::activity::enable(Kind::UnifiedMemoryCounter.into())?)
+        } else {
+            Err(CuptirError::Activity("enabling unified memory counters requires enabling the activity kind and supplying counter configurations".into()))
+        }
     }
 }
 

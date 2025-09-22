@@ -352,11 +352,7 @@ impl Builder {
             // clients are supposed to subscribe, so we subscribe without any handler.
             unsafe {
                 trace!("subscribing");
-                result::subscribe(
-                    &mut context.subscriber_handle,
-                    None,
-                    context.user_data as *mut _,
-                )?;
+                result::subscribe(&mut context.subscriber_handle, None, context.user_data)?;
             }
         }
 
