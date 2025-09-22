@@ -916,10 +916,6 @@ impl Builder {
 }
 
 impl Context {
-    /// Request to deliver activity records via the buffer completion callback.
-    ///
-    /// When forced is false, only complete records are flushed.
-    /// When forced is true, incomplete records may be flushed.
     pub(crate) fn flush_all(forced: bool) -> Result<(), CuptirError> {
         trace!("flushing activity buffer");
         result::activity::flush_all(if forced {

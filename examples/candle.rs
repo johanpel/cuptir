@@ -109,11 +109,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // TODO: not use candle
 
     // This must be done after driver initialization.
-    context.enable_activity_unified_memory_counters()?;
+    context.activity_enable_unified_memory_counters()?;
 
     let a = candle_core::Tensor::randn(0f32, 1., (2, 3), &device)?;
     let b = candle_core::Tensor::randn(0f32, 1., (3, 4), &device)?;
     let c = a.matmul(&b)?;
+
+    context.activity_flush_all(true)?;
 
     tracing::info!("{c}");
 

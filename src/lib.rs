@@ -50,13 +50,28 @@ impl Context {
     ///
     /// This requires the activity context to be initialized, see
     /// [ContextBuilder::with_activity].
-    pub fn enable_activity_unified_memory_counters(&self) -> Result<(), CuptirError> {
+    pub fn activity_enable_unified_memory_counters(&self) -> Result<(), CuptirError> {
         if let Some(activity) = &self.activity {
             activity.enable_unified_memory_counters()
         } else {
             Err(CuptirError::Activity(
                 "activity context is not initialized".into(),
             ))
+        }
+    }
+
+    /// Request to deliver activity records via the buffer completion callback.
+    ///
+    /// This function has no effect if the activity API is unused. To enable it, see
+    /// [ContextBuilder::with_activity].
+    ///
+    /// When forced is false, only complete records are flushed. When forced is true,
+    /// incomplete records may be flushed.
+    pub fn activity_flush_all(&self, forced: bool) -> Result<(), CuptirError> {
+        if self.activity.is_some() {
+            activity::Context::flush_all(forced)
+        } else {
+            Ok(())
         }
     }
 }
