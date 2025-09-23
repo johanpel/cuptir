@@ -50,6 +50,10 @@ impl RecordBuffer {
     /// Attempt to construct a new RecordBuffer.
     ///
     /// If the supplied `ptr` is a nullptr, this function will return an error.
+    ///
+    /// # Safety
+    /// This resulting [RecordBuffer] takes ownership over the buffer and will
+    /// deallocate it when dropped.
     fn try_new(ptr: *mut u8, size: usize, valid_size: usize) -> Result<Self, CuptirError> {
         if ptr.is_null() {
             Err(CuptirError::NullPointer)
@@ -106,11 +110,8 @@ impl Iterator for RecordBufferIterator {
         if let Err(error) = &result {
             match error.0 {
                 sys::CUptiResult::CUPTI_ERROR_MAX_LIMIT_REACHED
-                | sys::CUptiResult::CUPTI_ERROR_INVALID_KIND => None,
-                sys::CUptiResult::CUPTI_ERROR_NOT_INITIALIZED => {
-                    warn!("cupti is not initialized");
-                    None
-                }
+                | sys::CUptiResult::CUPTI_ERROR_INVALID_KIND
+                | sys::CUptiResult::CUPTI_ERROR_NOT_INITIALIZED => None,
                 _ => {
                     warn!("unexpected error in record buffer iterator: {error:?}");
                     None
@@ -971,6 +972,8 @@ impl Builder {
                     .map(Into::into)
                     .collect(),
             }))
+        } else if self.record_buffer_handler.is_some() {
+            Err(CuptirError::Builder("An activity record buffer handler is installed but no activity kind or driver/runtime API functions activity is enabled".into()))
         } else {
             Ok(None)
         }
@@ -1051,5 +1054,88 @@ impl Drop for Context {
                 warn!("unable to disable activity for runtime function: {error}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use serial_test::serial;
+
+    use crate::enums::{DriverFunc, RuntimeFunc};
+
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    pub(crate) fn reset_handler() {
+        #[allow(invalid_reference_casting)]
+        unsafe {
+            let lock: &mut OnceLock<Box<RecordBufferHandlerFn>> =
+                &mut *(&RECORD_BUFFER_HANDLER as *const _ as *mut _);
+            lock.take();
+        }
+    }
+
+    #[test]
+    fn record_buffer() {
+        // A nullptr is rejected
+        assert!(RecordBuffer::try_new(std::ptr::null_mut(), 0, 0).is_err());
+
+        // Iterator returns none if valid size is 0.
+        const ELEMENTS: usize = 128;
+        let buffer = RecordBuffer::try_new(
+            Box::into_raw(Box::new([0u32; ELEMENTS])) as *mut u8,
+            ELEMENTS * std::mem::size_of::<u32>(),
+            0,
+        )
+        .unwrap();
+        let mut iter = buffer.into_iter();
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn builder() -> TestResult {
+        // Building the default results in no activity context.
+        assert!(Builder::new().build().unwrap().is_none());
+
+        // Can't build with some kinds enabled but without handler
+        assert!(
+            Builder::new()
+                .with_kinds([Kind::ConcurrentKernel])
+                .build()
+                .is_err()
+        );
+
+        // Can't build with a handler but without any kind or function enabled.
+        assert!(
+            Builder::new()
+                .with_record_buffer_handler(|_| Ok(()))
+                .build()
+                .is_err()
+        );
+
+        // Can build with a kind enabled and a handler.
+        reset_handler();
+        Builder::new()
+            .with_kinds([Kind::ConcurrentKernel])
+            .with_record_buffer_handler(|_| Ok(()))
+            .build()?;
+
+        // Can build with a driver function enabled and a handler.
+        reset_handler();
+        Builder::new()
+            .with_driver_functions([DriverFunc::cuMemcpy])
+            .with_record_buffer_handler(|_| Ok(()))
+            .build()?;
+
+        // Can build with a kind enabled and a runtime function.
+        reset_handler();
+        Builder::new()
+            .with_runtime_functions([RuntimeFunc::cudaMemcpy_v3020])
+            .with_record_buffer_handler(|_| Ok(()))
+            .build()?;
+
+        Ok(())
     }
 }

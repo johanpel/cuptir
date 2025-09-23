@@ -23,3 +23,5 @@ target
 .vscode/
 
 *.log
+tarpaulin-report.html
+lcov.info

@@ -31,3 +31,13 @@ extern \"C\" __global__ void sin_kernel(float *out, const float *inp, const size
     assert_eq!(&in_host, a_host_2.as_slice());
     Ok(())
 }
+
+#[cfg(test)]
+mod test {
+    use crate::run_a_kernel;
+
+    #[test]
+    pub fn run() {
+        run_a_kernel().unwrap()
+    }
+}

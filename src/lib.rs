@@ -38,11 +38,11 @@ pub mod function_params {
 /// [Context::activity_enable_unified_memory_counters].
 #[derive(Debug)]
 pub struct Context {
-    activity: Option<activity::Context>,
-
-    // This needs to be dropped last, so this field should be the last field of this
-    // struct.
+    // While somewhat counter-intuitive, following CUPTI examples, drop this first to
+    // call cupti unsubscribe, after which they flush the activity API.
     _callback: callback::Context,
+
+    activity: Option<activity::Context>,
 }
 
 impl Context {
@@ -133,6 +133,7 @@ impl ContextBuilder {
 
 #[cfg(test)]
 mod tests {
+    use cuptir_example_utils::run_a_kernel;
     use serial_test::serial;
 
     use super::*;
@@ -165,11 +166,12 @@ mod tests {
 
     #[test]
     #[serial]
-    fn activity_record_buffer_handler() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn activity_api() -> std::result::Result<(), Box<dyn std::error::Error>> {
         use std::sync::{Arc, Mutex};
         let records: Arc<Mutex<Vec<activity::Record>>> = Arc::new(Mutex::new(vec![]));
 
         let recs_cb = Arc::clone(&records);
+        crate::activity::test::reset_handler();
         let context = ContextBuilder::new()
             .with_activity(
                 activity::Builder::new()
@@ -181,22 +183,59 @@ mod tests {
                         );
                         Ok(())
                     })
-                    .with_kinds([activity::Kind::Driver]),
+                    .with_kinds([activity::Kind::ConcurrentKernel]),
             )
             .build()?;
 
-        // Init the driver and get the count. This should result in exactly one event.
-        cudarc::driver::result::init()?;
-        let _ = cudarc::driver::result::device::get_count()?;
+        run_a_kernel()?;
 
         drop(context);
 
         let recs = records.lock().unwrap();
         assert_eq!(recs.len(), 1);
         match &recs[0] {
-            activity::Record::DriverApi(rec) => assert_eq!(rec.name, "cuDeviceGetCount"),
+            activity::Record::Kernel(rec) => {
+                assert!(rec.name.as_ref().is_some_and(|name| name.contains("sin")));
+            }
             _ => panic!("unexpected record kind"),
         }
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn callback_api() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::sync::{Arc, atomic::AtomicU8};
+        let count = Arc::new(AtomicU8::new(0));
+        let count_cb = Arc::clone(&count);
+        let context = ContextBuilder::new()
+            .with_callback(
+                callback::Builder::new()
+                    .with_driver_functions([driver::Function::cuDeviceGetCount])
+                    .with_handler(move |data| {
+                        match data {
+                            callback::Data::DriverApi(rec) => match rec.function {
+                                driver::Function::cuDeviceGetCount => {
+                                    count_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                _ => (),
+                            },
+                            _ => (),
+                        };
+                        Ok(())
+                    }),
+            )
+            .build()?;
+
+        // Init the driver and get the device count. This should result in two
+        // callbacks, one for the enter site and one for the exit site.
+        cudarc::driver::result::init()?;
+        let _ = cudarc::driver::result::device::get_count()?;
+
+        drop(context);
+
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2);
 
         Ok(())
     }
