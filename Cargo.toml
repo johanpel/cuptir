@@ -35,6 +35,7 @@ cudarc = { workspace = true, features = [
 [dev-dependencies]
 serial_test = "3.2.0"
 cuptir-example-utils = { path = "crates/example-utils" }
+tracing-subscriber = "0.3.20"
 
 [build-dependencies]
 bindgen = "0.72.1"

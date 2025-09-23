@@ -122,7 +122,7 @@ fn generate_safe_enums(source: &syn::File) -> TokenStream {
                 let conversions_try_from = if tgt_sentinels.is_empty() {
                     quote! {
                         fn try_from(value: sys::#source_ident) -> Result<Self, CuptirError> {
-                            Self::from_repr(value as u32).ok_or(CuptirError::Corrupted)
+                            Self::try_from(value as u32)
                         }
                     }
                 } else {
@@ -130,7 +130,7 @@ fn generate_safe_enums(source: &syn::File) -> TokenStream {
                         fn try_from(value: sys::#source_ident) -> Result<Self, CuptirError> {
                             match value {
                                 #(#tgt_sentinels,)*
-                                other => { Self::from_repr(other as u32).ok_or(CuptirError::Corrupted) }
+                                other => { Self::try_from(other as u32) }
                             }
                         }
                     }
@@ -157,6 +157,14 @@ fn generate_safe_enums(source: &syn::File) -> TokenStream {
                         fn from(value: &#tgt_enum_ident) -> Self {
                             (*value) as u32
                         }
+                    }
+
+                    impl TryFrom<u32> for #tgt_enum_ident {
+                        type Error = CuptirError;
+                        fn try_from(value: u32) -> Result<Self, CuptirError> {
+                            Self::from_repr(value).ok_or(CuptirError::Corrupted)
+                        }
+
                     }
                 };
 

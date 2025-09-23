@@ -1,4 +1,10 @@
 //! Safe wrappers around the CUPTI Activity API
+//!
+//! # Notes on activity kinds.
+//!
+//! Please refer to [the CUPTI
+//! documentation](https://docs.nvidia.com/cupti/api/group__CUPTI__ACTIVITY__API.html#_CPPv418CUpti_ActivityKind)
+//! to understand which activity kinds relate to which type of record.
 use std::{
     alloc::{Layout, alloc, dealloc},
     collections::HashSet,
@@ -6,7 +12,10 @@ use std::{
     sync::OnceLock,
 };
 
-use cudarc::cupti::{result, sys};
+use cudarc::cupti::{
+    result,
+    sys::{self, CUpti_ActivityFlag},
+};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
@@ -14,6 +23,7 @@ use tracing::{trace, warn};
 use crate::{
     callback::callback_name,
     driver,
+    enums::{DriverFunc, RuntimeFunc},
     error::CuptirError,
     runtime,
     utils::{try_demangle_from_ffi, try_str_from_ffi},
@@ -22,6 +32,7 @@ use crate::{
 pub type ChannelType = crate::enums::ChannelType;
 pub type FuncShmemLimitConfig = crate::enums::FuncShmemLimitConfig;
 pub type Kind = crate::enums::ActivityKind;
+pub type MemcpyKind = crate::enums::ActivityMemcpyKind;
 pub type MemoryKind = crate::enums::ActivityMemoryKind;
 pub type MemoryOperationType = crate::enums::ActivityMemoryOperationType;
 pub type MemoryPoolOperationType = crate::enums::ActivityMemoryPoolOperationType;
@@ -196,16 +207,28 @@ impl From<&sys::CUpti_ActivityAPI> for ApiProps {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct DriverApiRecord {
-    pub name: String,
+    pub function: DriverFunc,
     pub props: ApiProps,
+}
+
+impl DriverApiRecord {
+    pub fn function_name(&self) -> Result<String, CuptirError> {
+        callback_name(crate::callback::Domain::DriverApi, self.function as u32)
+    }
 }
 
 /// A CUDA runtime API record
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct RuntimeApiRecord {
-    pub name: String,
+    pub function: RuntimeFunc,
     pub props: ApiProps,
+}
+
+impl RuntimeApiRecord {
+    pub fn function_name(&self) -> Result<String, CuptirError> {
+        callback_name(crate::callback::Domain::RuntimeApi, self.function as u32)
+    }
 }
 
 /// Internal launch API record
@@ -334,16 +357,16 @@ impl TryFrom<&sys::CUpti_ActivityKernel9> for KernelRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct MemcpyRecord {
-    pub copy_kind: u8,
-    pub src_kind: u8,
-    pub dst_kind: u8,
-    pub flags: u8,
+    pub copy_kind: MemcpyKind,
+    pub src_kind: MemoryKind,
+    pub dst_kind: MemoryKind,
+    pub is_async: bool,
     pub bytes: u64,
-    pub start: u64,
-    pub end: u64,
-    pub device_id: u32,
+    pub start: Timestamp,
+    pub end: Timestamp,
+    pub device_id: DeviceId,
     pub context_id: u32,
-    pub stream_id: u32,
+    pub stream_id: StreamId,
     pub correlation_id: u32,
     pub runtime_correlation_id: u32,
     pub graph_node_id: u64,
@@ -358,10 +381,12 @@ impl TryFrom<&sys::CUpti_ActivityMemcpy6> for MemcpyRecord {
 
     fn try_from(value: &sys::CUpti_ActivityMemcpy6) -> Result<Self, Self::Error> {
         Ok(Self {
-            copy_kind: value.copyKind,
-            src_kind: value.srcKind,
-            dst_kind: value.dstKind,
-            flags: value.flags,
+            copy_kind: MemcpyKind::try_from(value.copyKind as u32)?,
+            src_kind: MemoryKind::try_from(value.srcKind as u32)?,
+            dst_kind: MemoryKind::try_from(value.dstKind as u32)?,
+            is_async: value.flags
+                & CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_MEMCPY_ASYNC as u32 as u8
+                != 0,
             bytes: value.bytes,
             start: value.start,
             end: value.end,
@@ -520,8 +545,7 @@ pub mod uvm {
                 destination_device_id: rec.dstId,
                 stream_id: rec.streamId,
                 process_id: rec.processId,
-                migration_cause: MigrationCause::from_repr(rec.flags)
-                    .ok_or(CuptirError::Corrupted)?,
+                migration_cause: MigrationCause::try_from(rec.flags)?,
             })
         }
     }
@@ -601,20 +625,14 @@ impl Record {
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DRIVER => {
                 let api_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityAPI) };
                 Ok(Record::DriverApi(DriverApiRecord {
-                    name: callback_name(
-                        sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_DRIVER_API,
-                        api_record.cbid,
-                    )?,
+                    function: DriverFunc::try_from(api_record.cbid)?,
                     props: api_record.into(),
                 }))
             }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_RUNTIME => {
                 let api_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityAPI) };
                 Ok(Record::RuntimeApi(RuntimeApiRecord {
-                    name: callback_name(
-                        sys::CUpti_CallbackDomain::CUPTI_CB_DOMAIN_RUNTIME_API,
-                        api_record.cbid,
-                    )?,
+                    function: RuntimeFunc::try_from(api_record.cbid)?,
                     props: api_record.into(),
                 }))
             }
@@ -628,7 +646,7 @@ impl Record {
                 let value = unsafe { &*(record_ptr as *const sys::CUpti_ActivityKernel9) };
                 Ok(Record::Kernel(value.try_into()?))
             }
-            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY2 => {
+            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY => {
                 let memcpy_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityMemcpy6) };
                 Ok(Record::Memcpy(memcpy_record.try_into()?))
             }
@@ -1059,6 +1077,8 @@ impl Drop for Context {
 
 #[cfg(test)]
 pub(crate) mod test {
+    use std::sync::{Arc, Mutex};
+
     use serial_test::serial;
 
     use crate::enums::{DriverFunc, RuntimeFunc};
@@ -1137,5 +1157,147 @@ pub(crate) mod test {
             .build()?;
 
         Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn driver_and_runtime_kinds() -> TestResult {
+        let records: Arc<Mutex<Vec<Record>>> = Arc::new(Mutex::new(vec![]));
+        let records_cb = Arc::clone(&records);
+
+        let _callback = crate::callback::Builder::new().build();
+        reset_handler();
+        let _activity = Builder::new()
+            .with_kinds([Kind::Driver, Kind::Runtime])
+            .with_record_buffer_handler(move |buffer| {
+                records_cb.lock().unwrap().extend(
+                    buffer
+                        .into_iter()
+                        .filter_map(|maybe_record| maybe_record.ok()),
+                );
+                Ok(())
+            })
+            .build()?
+            .unwrap();
+
+        // Do a runtime thing, this causes a large amount driver records to be
+        // generated, including a cuDeviceGetCount, probably as a part of lazy runtime
+        // initialization.
+        let _pointer = unsafe { cudarc::runtime::result::malloc_sync(1) }?;
+
+        Context::flush_all(true)?;
+
+        let recs = records.lock().unwrap();
+
+        let mut num_cu_device_get_count = 0;
+        let mut num_cuda_malloc = 0;
+
+        for rec in recs.iter() {
+            match rec {
+                Record::DriverApi(d) => {
+                    if d.function == DriverFunc::cuDeviceGetCount {
+                        num_cu_device_get_count += 1;
+                    }
+                }
+                Record::RuntimeApi(r) => {
+                    if r.function == RuntimeFunc::cudaMalloc_v3020 {
+                        num_cuda_malloc += 1;
+                    }
+                }
+                // Don't care about other records for now :tm:
+                _ => (),
+            }
+        }
+
+        assert_eq!(num_cu_device_get_count, 1);
+        assert_eq!(num_cuda_malloc, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn mem_record_allocate_and_copy() -> TestResult {
+        let records: Arc<Mutex<Vec<Record>>> = Arc::new(Mutex::new(vec![]));
+        let records_cb = Arc::clone(&records);
+
+        let _callback = crate::callback::Builder::new().build();
+        reset_handler();
+        let _activity = Builder::new()
+            .with_kinds([Kind::Memcpy, Kind::Memory2])
+            .with_record_buffer_handler(move |buffer| {
+                records_cb.lock().unwrap().extend(
+                    buffer
+                        .into_iter()
+                        .filter_map(|maybe_record| maybe_record.ok()),
+                );
+                Ok(())
+            })
+            .build()?
+            .unwrap();
+
+        // Round-trip some bytes.
+        const SIZE: u64 = 1337;
+        let context = cudarc::driver::CudaContext::new(0)?;
+        let stream = context.default_stream();
+        let host_buffer_a = vec![42u8; SIZE as usize];
+        let mut host_buffer_b = vec![0u8; SIZE as usize];
+        // Record 1: device allocation
+        let mut device_buffer = unsafe { stream.alloc::<u8>(SIZE as usize) }?;
+        // Record 2: memcpy
+        stream.memcpy_htod(&host_buffer_a, &mut device_buffer)?;
+        // Record 3: memcpy
+        stream.memcpy_dtoh(&device_buffer, &mut host_buffer_b)?;
+        // Record 4: device free
+        drop(device_buffer);
+        stream.synchronize()?;
+        // Sanity check
+        assert!(host_buffer_b.into_iter().all(|v| v == 42u8));
+
+        Context::flush_all(true)?;
+
+        let recs = records.lock().unwrap();
+        assert_eq!(recs.len(), 4);
+
+        if let Record::Memory(alloc) = &recs[0] {
+            assert_eq!(alloc.bytes, SIZE);
+            assert_eq!(alloc.memory_kind, MemoryKind::Device);
+            assert_eq!(alloc.memory_operation_type, MemoryOperationType::Allocation);
+        } else {
+            panic!();
+        }
+        if let Record::Memcpy(h2d) = &recs[1] {
+            assert_eq!(h2d.bytes, SIZE);
+            assert_eq!(h2d.copy_kind, MemcpyKind::Htod);
+            assert!(h2d.is_async);
+        } else {
+            panic!();
+        }
+        if let Record::Memcpy(d2h) = &recs[2] {
+            assert_eq!(d2h.bytes, SIZE);
+            assert_eq!(d2h.copy_kind, MemcpyKind::Dtoh);
+            assert!(d2h.is_async);
+        } else {
+            panic!();
+        }
+        if let Record::Memory(free) = &recs[3] {
+            assert_eq!(free.bytes, SIZE);
+            assert_eq!(free.memory_kind, MemoryKind::Device);
+            assert_eq!(free.memory_operation_type, MemoryOperationType::Release);
+        } else {
+            panic!();
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    pub fn record_nullptr_deref_errors_out() {
+        assert!(
+            unsafe {
+                Record::try_from_record_ptr(std::ptr::null_mut() as *mut sys::CUpti_Activity)
+            }
+            .is_err()
+        )
     }
 }

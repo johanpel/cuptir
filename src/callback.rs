@@ -9,6 +9,7 @@ use tracing::trace;
 
 use crate::{
     driver,
+    enums::CallbackDomain,
     error::CuptirError,
     runtime,
     utils::{try_demangle_from_ffi, try_str_from_ffi},
@@ -45,13 +46,10 @@ fn handle_callback(callback: Data) -> Result<(), CuptirError> {
 }
 
 // Obtain the name of a callback within a specific domain.
-pub(crate) fn callback_name(
-    domain: sys::CUpti_CallbackDomain,
-    id: u32,
-) -> Result<String, CuptirError> {
+pub(crate) fn callback_name(domain: CallbackDomain, id: u32) -> Result<String, CuptirError> {
     let mut name_ptr: *const std::os::raw::c_char = std::ptr::null_mut();
     unsafe {
-        result::get_callback_name(domain, id, &mut name_ptr)?;
+        result::get_callback_name(domain.into(), id, &mut name_ptr)?;
     }
     Ok(if let Some(name) = unsafe { try_str_from_ffi(name_ptr) } {
         name.to_owned()
@@ -124,7 +122,7 @@ impl DriverApiCallbackData {
     }
 
     pub fn function_name(&self) -> Result<String, CuptirError> {
-        callback_name(Domain::DriverApi.into(), self.function as u32)
+        callback_name(Domain::DriverApi, self.function as u32)
     }
 }
 
@@ -185,7 +183,7 @@ impl RuntimeApiCallbackData {
     }
 
     pub fn function_name(&self) -> Result<String, CuptirError> {
-        callback_name(Domain::RuntimeApi.into(), self.function as u32)
+        callback_name(Domain::RuntimeApi, self.function as u32)
     }
 }
 
