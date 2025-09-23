@@ -36,144 +36,143 @@ fn generate_safe_enums(source: &syn::File) -> TokenStream {
     source.items.iter().for_each(|item|
         if let syn::Item::Enum(src_enum) = item {
             let src_enum_name = src_enum.ident.to_string();
-            if src_enum_name.starts_with("CUpti_") {
-                if let Some((_, rest)) = src_enum_name.split_once("CUpti_") {
-                    let src_enum_variants = src_enum
-                        .variants
-                        .iter()
-                        .map(|src_variant| src_variant.ident.clone())
-                        .collect::<Vec<_>>();
+            if src_enum_name.starts_with("CUpti_") 
+                && let Some((_, rest)) = src_enum_name.split_once("CUpti_") {
+                let src_enum_variants = src_enum
+                    .variants
+                    .iter()
+                    .map(|src_variant| src_variant.ident.clone())
+                    .collect::<Vec<_>>();
 
-                    let tgt_enum_name = enum_ident_case_converter
-                        .convert(rest)
-                        // Special case for the enum related to callback ids, it has
-                        // an ugly suffix:
-                        .replace("ApiTraceCbidEnum", "Func");
+                let tgt_enum_name = enum_ident_case_converter
+                    .convert(rest)
+                    // Special case for the enum related to callback ids, it has
+                    // an ugly suffix:
+                    .replace("ApiTraceCbidEnum", "Func");
 
-                    // Remember whether we're dealing with a special case.
-                    let is_api_func = tgt_enum_name.eq("DriverFunc") || tgt_enum_name.eq("RuntimeFunc");
+                // Remember whether we're dealing with a special case.
+                let is_api_func = tgt_enum_name.eq("DriverFunc") || tgt_enum_name.eq("RuntimeFunc");
 
-                    let tgt_enum_ident = format_ident!("{tgt_enum_name}");
+                let tgt_enum_ident = format_ident!("{tgt_enum_name}");
 
-                    // Determine the longest common prefix for the enum variants,
-                    // which we will strip off. Luckily, CUPTI enum variant
-                    // declarations are very consistent about this.
-                    let prefix = longest_common_prefix(&src_enum_variants);
+                // Determine the longest common prefix for the enum variants,
+                // which we will strip off. Luckily, CUPTI enum variant
+                // declarations are very consistent about this.
+                let prefix = longest_common_prefix(&src_enum_variants);
 
-                    let mut tgt_variants = vec![];
-                    let mut tgt_sentinels = vec![];
-                    for src_variant in src_enum_variants {
-                        // Remove the common prefix from the variant. E.g. for the
-                        // bindgen generated enum `CUpti_CallbackIdResource` it
-                        // would be "CUPTI_CBID_RESOURCE_".
-                        let tgt_variant_name = src_variant
-                            .to_string()
-                            .strip_prefix(&prefix)
-                            .unwrap()
-                            .to_owned();
+                let mut tgt_variants = vec![];
+                let mut tgt_sentinels = vec![];
+                for src_variant in src_enum_variants {
+                    // Remove the common prefix from the variant. E.g. for the
+                    // bindgen generated enum `CUpti_CallbackIdResource` it
+                    // would be "CUPTI_CBID_RESOURCE_".
+                    let tgt_variant_name = src_variant
+                        .to_string()
+                        .strip_prefix(&prefix)
+                        .unwrap()
+                        .to_owned();
 
-                        // CUPTI often declares some combination of four possible
-                        // sentinel variants.
-                        // - <X>_INVALID, with underlying value 0,
-                        // - <X>_SIZE and <X>_COUNT, to help determine the number of
-                        //   valid variants within an enum,
-                        // - <X>_FORCE_INT, to force the C compiler to use a 32-bit
-                        //   representation as underlying type.
-                        //
-                        // We're removing these such that clients of the safe Rust
-                        // wrapper can't erroneously use these sentinels.
-                        let src_ident = src_enum.ident.clone();
-                        if !(tgt_variant_name.eq("INVALID")
-                            || tgt_variant_name.eq("SIZE")
-                            || tgt_variant_name.eq("COUNT")
-                            || tgt_variant_name.contains("FORCE_INT"))
-                        {
-                            let src_variant_ident = format_ident!("{}", src_variant);
-                            // Special case for the callback names, we want to
-                            // retain their case style so they are easy to look up
-                            // in cuda docs.
-                            let tgt_variant_ident =
-                                format_ident!("{}",
-                                    if is_api_func {
-                                        tgt_variant_name
-                                    } else {
-                                        enum_variant_case_converter.convert(tgt_variant_name)
-                                    }
-                            );
-                            let variant = quote! {
-                                #tgt_variant_ident = sys::#src_ident::#src_variant_ident as u32
-                            };
-                            tgt_variants.push(variant);
-                        } else {
-                            let match_sentinel = quote! {
-                                sys::#src_ident::#src_variant => Err(CuptirError::SentinelEnum(value as u32))
-                            };
-                            tgt_sentinels.push(match_sentinel);
+                    // CUPTI often declares some combination of four possible
+                    // sentinel variants.
+                    // - <X>_INVALID, with underlying value 0,
+                    // - <X>_SIZE and <X>_COUNT, to help determine the number of
+                    //   valid variants within an enum,
+                    // - <X>_FORCE_INT, to force the C compiler to use a 32-bit
+                    //   representation as underlying type.
+                    //
+                    // We're removing these such that clients of the safe Rust
+                    // wrapper can't erroneously use these sentinels.
+                    let src_ident = src_enum.ident.clone();
+                    if !(tgt_variant_name.eq("INVALID")
+                        || tgt_variant_name.eq("SIZE")
+                        || tgt_variant_name.eq("COUNT")
+                        || tgt_variant_name.contains("FORCE_INT"))
+                    {
+                        let src_variant_ident = format_ident!("{}", src_variant);
+                        // Special case for the callback names, we want to
+                        // retain their case style so they are easy to look up
+                        // in cuda docs.
+                        let tgt_variant_ident =
+                            format_ident!("{}",
+                                if is_api_func {
+                                    tgt_variant_name
+                                } else {
+                                    enum_variant_case_converter.convert(tgt_variant_name)
+                                }
+                        );
+                        let variant = quote! {
+                            #tgt_variant_ident = sys::#src_ident::#src_variant_ident as u32
+                        };
+                        tgt_variants.push(variant);
+                    } else {
+                        let match_sentinel = quote! {
+                            sys::#src_ident::#src_variant => Err(CuptirError::SentinelEnum(value as u32))
+                        };
+                        tgt_sentinels.push(match_sentinel);
+                    }
+                }
+
+                let allow_non_camel = if is_api_func {
+                    quote! { #[allow(non_camel_case_types)] }
+                } else {
+                    quote! {}
+                };
+
+                let source_ident = src_enum.ident.clone();
+                let conversions_try_from = if tgt_sentinels.is_empty() {
+                    quote! {
+                        fn try_from(value: sys::#source_ident) -> Result<Self, CuptirError> {
+                            Self::from_repr(value as u32).ok_or(CuptirError::Corrupted)
+                        }
+                    }
+                } else {
+                    quote! {
+                        fn try_from(value: sys::#source_ident) -> Result<Self, CuptirError> {
+                            match value {
+                                #(#tgt_sentinels,)*
+                                other => { Self::from_repr(other as u32).ok_or(CuptirError::Corrupted) }
+                            }
+                        }
+                    }
+                };
+                let conversions = quote! {
+                    impl TryFrom<sys::#source_ident> for #tgt_enum_ident {
+                        type Error = CuptirError;
+                        #conversions_try_from
+                    }
+
+                    impl From<#tgt_enum_ident> for sys::#source_ident {
+                        fn from(value: #tgt_enum_ident) -> Self {
+                            unsafe { std::mem::transmute::<u32, Self>(value as u32) }
                         }
                     }
 
-                    let allow_non_camel = if is_api_func {
-                        quote! { #[allow(non_camel_case_types)] }
-                    } else {
-                        quote! {}
-                    };
-
-                    let source_ident = src_enum.ident.clone();
-                    let conversions_try_from = if tgt_sentinels.is_empty() {
-                        quote! {
-                            fn try_from(value: sys::#source_ident) -> Result<Self, CuptirError> {
-                                Self::from_repr(value as u32).ok_or(CuptirError::Corrupted)
-                            }
+                    impl From<#tgt_enum_ident> for u32 {
+                        fn from(value: #tgt_enum_ident) -> Self {
+                            value as u32
                         }
-                    } else {
-                        quote! {
-                            fn try_from(value: sys::#source_ident) -> Result<Self, CuptirError> {
-                                match value {
-                                    #(#tgt_sentinels,)*
-                                    other => { Self::from_repr(other as u32).ok_or(CuptirError::Corrupted) }
-                                }
-                            }
-                        }
-                    };
-                    let conversions = quote! {
-                        impl TryFrom<sys::#source_ident> for #tgt_enum_ident {
-                            type Error = CuptirError;
-                            #conversions_try_from
-                        }
+                    }
 
-                        impl From<#tgt_enum_ident> for sys::#source_ident {
-                            fn from(value: #tgt_enum_ident) -> Self {
-                                unsafe { std::mem::transmute::<u32, Self>(value as u32) }
-                            }
+                    impl From<&#tgt_enum_ident> for u32 {
+                        fn from(value: &#tgt_enum_ident) -> Self {
+                            (*value) as u32
                         }
+                    }
+                };
 
-                        impl From<#tgt_enum_ident> for u32 {
-                            fn from(value: #tgt_enum_ident) -> Self {
-                                value as u32
-                            }
-                        }
+                let enum_decl = quote! {
+                    #[derive(Debug, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq, FromRepr)]
+                    #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+                    #allow_non_camel
+                    #[repr(u32)]
+                    pub enum #tgt_enum_ident {
+                        #(#tgt_variants),*
+                    }
 
-                        impl From<&#tgt_enum_ident> for u32 {
-                            fn from(value: &#tgt_enum_ident) -> Self {
-                                (*value) as u32
-                            }
-                        }
-                    };
+                    #conversions
+                };
 
-                    let enum_decl = quote! {
-                        #[derive(Debug, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq, FromRepr)]
-                        #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-                        #allow_non_camel
-                        #[repr(u32)]
-                        pub enum #tgt_enum_ident {
-                            #(#tgt_variants),*
-                        }
-
-                        #conversions
-                    };
-
-                    enum_decls.push(enum_decl);
-                }
+                enum_decls.push(enum_decl);
             }
         }
     );

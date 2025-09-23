@@ -13,6 +13,7 @@ version = "0.1.0"
 name = "cuptir"
 edition.workspace = true
 rust-version.workspace = true
+version.workspace = true
 
 [features]
 default = []
@@ -33,13 +34,6 @@ cudarc = { workspace = true, features = [
 
 [dev-dependencies]
 serial_test = "3.2.0"
-cudarc = { workspace = true, features = [
-    "cuda-version-from-build-system",
-    "dynamic-linking",
-    "cupti",
-    "std",
-    "nvrtc",
-] }
 cuptir-example-utils = { path = "crates/example-utils" }
 
 [build-dependencies]

@@ -27,14 +27,15 @@ pub mod function_params {
     include!(concat!(env!("OUT_DIR"), "/function_params.rs"));
 }
 
-/// Global context for cuptir.
+/// Context managing CUPTI.
 ///
 /// Only one instance of this struct can exist at a time, because CUPTI can only handle
 /// one subscriber.
 ///
 /// This [Context] should be created before any other CUDA interactions take place in
-/// the program.
-// TODO: probably split this out over multiple contexts, one per CUPTI module
+/// the program. There is one exception for functionality related to the Unified Virtual
+/// Memory (UVM) counters of the Activity API. Also see:
+/// [Context::activity_enable_unified_memory_counters].
 #[derive(Debug)]
 pub struct Context {
     activity: Option<activity::Context>,
