@@ -1,0 +1,13 @@
+[package]
+name = "cuptir-example-utils"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cudarc = { workspace = true, features = [
+    "cuda-version-from-build-system",
+    "dynamic-linking",
+    "cupti",
+    "std",
+    "nvrtc",
+] }

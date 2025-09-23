@@ -1,3 +1,4 @@
+//! Safe wrappers around the CUPTI Callback API.
 use std::collections::HashSet;
 use std::sync::OnceLock;
 

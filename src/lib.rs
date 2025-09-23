@@ -1,3 +1,10 @@
+//! Safe wrappers for the CUDA Profiling Tools Interface (CUPTI)
+//!  
+//! Cuptir provides safe wrappers around the bindings of the CUDA Profiling Tools
+//! Interface (CUPTI) provided by [cudarc](https://docs.rs/cudarc/latest/cudarc/).
+//!
+//! These wrappers are experimental and explorative. At some point they could be
+//! upstreamed to `cudarc`.
 use crate::error::CuptirError;
 
 pub mod activity;
@@ -11,11 +18,11 @@ mod utils;
 // driver. In order to be able to work with these types, expose cudarc for now :tm:.
 pub use cudarc;
 
-// Generated enums
+/// Generated enums
 pub mod enums {
     include!(concat!(env!("OUT_DIR"), "/enums.rs"));
 }
-// Generated meta structs
+/// Generated function parameter structs
 pub mod function_params {
     include!(concat!(env!("OUT_DIR"), "/function_params.rs"));
 }

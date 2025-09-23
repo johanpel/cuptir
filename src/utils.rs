@@ -1,3 +1,4 @@
+//! Random crate utilities
 use std::{ffi::CStr, ptr::NonNull};
 
 /// Return a CStr from a C string if the C string is not a nullptr.

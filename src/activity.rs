@@ -1,3 +1,4 @@
+//! Safe wrappers around the CUPTI Activity API
 use std::{
     alloc::{Layout, alloc, dealloc},
     collections::HashSet,
@@ -26,8 +27,6 @@ pub type MemoryOperationType = crate::enums::ActivityMemoryOperationType;
 pub type MemoryPoolOperationType = crate::enums::ActivityMemoryPoolOperationType;
 pub type MemoryPoolType = crate::enums::ActivityMemoryPoolType;
 pub type PartitionedGlobalCacheConfig = crate::enums::ActivityPartitionedGlobalCacheConfig;
-pub type UnifiedMemoryCounterScope = crate::enums::ActivityUnifiedMemoryCounterScope;
-pub type UnifiedMemoryCounterKind = crate::enums::ActivityUnifiedMemoryCounterKind;
 
 /// Default CUPTI buffer size.
 ///
@@ -85,6 +84,7 @@ impl IntoIterator for RecordBuffer {
     }
 }
 
+/// An iterator over activity [Record]s in a [RecordBuffer].
 pub struct RecordBufferIterator {
     buffer: RecordBuffer,
     current_record_ptr: *mut sys::CUpti_Activity,
@@ -154,13 +154,19 @@ fn handle_record_buffer(record_buffer: RecordBuffer) -> Result<(), CuptirError> 
     }
 }
 
-/// A time stamp
+/// A time stamp in nanoseconds.
+///
+/// CUPTI docs are not clear about the epoch to which this timestamp is relative. It
+/// might be relative to the Unix epoch.
 pub type Timestamp = u64;
 
 pub type ProcessId = u32;
 pub type ThreadId = u32;
 pub type CorrelationId = u32;
+pub type StreamId = u32;
+pub type DeviceId = u32;
 
+/// Properties shared across of [DriverApiRecord] and [RuntimeApiRecord] activity records.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct ApiProps {
@@ -201,14 +207,14 @@ pub struct RuntimeApiRecord {
     pub props: ApiProps,
 }
 
-/// An internal launch API record
+/// Internal launch API record
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct InternalLaunchApiRecord {
     pub props: ApiProps,
 }
 
-/// A kernel record
+/// Kernel activity record
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct KernelRecord {
@@ -323,7 +329,7 @@ impl TryFrom<&sys::CUpti_ActivityKernel9> for KernelRecord {
     }
 }
 
-/// A memcpy record
+/// Memcpy activity record
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct MemcpyRecord {
@@ -339,11 +345,9 @@ pub struct MemcpyRecord {
     pub stream_id: u32,
     pub correlation_id: u32,
     pub runtime_correlation_id: u32,
-    pub pad: u32,
     pub graph_node_id: u64,
     pub graph_id: u32,
     pub channel_id: u32,
-    pub pad2: u32,
     pub copy_count: u64,
     pub channel_type: ChannelType,
 }
@@ -365,17 +369,16 @@ impl TryFrom<&sys::CUpti_ActivityMemcpy6> for MemcpyRecord {
             stream_id: value.streamId,
             correlation_id: value.correlationId,
             runtime_correlation_id: value.runtimeCorrelationId,
-            pad: value.pad,
             graph_node_id: value.graphNodeId,
             graph_id: value.graphId,
             channel_id: value.channelID,
             channel_type: value.channelType.try_into()?,
-            pad2: value.pad2,
             copy_count: value.copyCount,
         })
     }
 }
 
+/// Memory activity record
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct MemoryRecord {
@@ -392,7 +395,6 @@ pub struct MemoryRecord {
     pub stream_id: u32,
     pub name: Option<String>,
     pub is_async: u32,
-    pub pad1: u32,
     // TODO: this union:
     // pub memory_pool_config: sys::CUpti_ActivityMemory4__bindgen_ty_1,
     pub source: Option<String>,
@@ -416,12 +418,12 @@ impl TryFrom<&sys::CUpti_ActivityMemory4> for MemoryRecord {
             stream_id: value.streamId,
             name: unsafe { try_demangle_from_ffi(value.name) },
             is_async: value.isAsync,
-            pad1: value.pad1,
             source: unsafe { try_str_from_ffi(value.source) }.map(ToOwned::to_owned),
         })
     }
 }
 
+/// Memory pool activity record.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct MemoryPoolRecord {
@@ -458,63 +460,118 @@ impl TryFrom<&sys::CUpti_ActivityMemoryPool2> for MemoryPoolRecord {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct UnifiedMemoryCounterConfig {
-    pub scope: UnifiedMemoryCounterScope,
-    pub kind: UnifiedMemoryCounterKind,
-    pub device_id: u32,
-    pub enable: bool,
-}
+/// Types related Unified Virtual Memory (UVM) a.k.a. Unified Memory
+pub mod uvm {
+    use super::*;
 
-impl From<UnifiedMemoryCounterConfig> for sys::CUpti_ActivityUnifiedMemoryCounterConfig {
-    fn from(value: UnifiedMemoryCounterConfig) -> Self {
-        sys::CUpti_ActivityUnifiedMemoryCounterConfig {
-            scope: value.scope.into(),
-            kind: value.kind.into(),
-            deviceId: value.device_id,
-            enable: if value.enable { 1 } else { 0 },
+    pub type CounterScope = crate::enums::ActivityUnifiedMemoryCounterScope;
+    pub type CounterKind = crate::enums::ActivityUnifiedMemoryCounterKind;
+    pub type AccessType = crate::enums::ActivityUnifiedMemoryAccessType;
+    pub type MigrationCause = crate::enums::ActivityUnifiedMemoryMigrationCause;
+
+    /// Configuration for enabling UVM counter activity records
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    pub struct CounterConfig {
+        pub scope: uvm::CounterScope,
+        pub kind: uvm::CounterKind,
+        pub device_id: u32,
+        pub enable: bool,
+    }
+
+    impl From<CounterConfig> for sys::CUpti_ActivityUnifiedMemoryCounterConfig {
+        fn from(value: CounterConfig) -> Self {
+            sys::CUpti_ActivityUnifiedMemoryCounterConfig {
+                scope: value.scope.into(),
+                kind: value.kind.into(),
+                deviceId: value.device_id,
+                enable: if value.enable { 1 } else { 0 },
+            }
+        }
+    }
+
+    /// Data of UVM counter records representing transfers
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+    pub struct BytesTransfer {
+        pub memory_region_bytes: u64,
+        pub start: Timestamp,
+        pub end: Timestamp,
+        pub virtual_base_address: u64,
+        pub source_device_id: DeviceId,
+        pub destination_device_id: DeviceId,
+        pub stream_id: StreamId,
+        pub process_id: ProcessId,
+        pub migration_cause: MigrationCause,
+    }
+
+    impl BytesTransfer {
+        /// Construct a new BytesTransfer struct assuming the provided record holds
+        /// valid data for a bytes transfer kind of record.
+        fn try_from_record_unchecked(
+            rec: &sys::CUpti_ActivityUnifiedMemoryCounter3,
+        ) -> Result<Self, CuptirError> {
+            Ok(Self {
+                memory_region_bytes: rec.value,
+                start: rec.start,
+                end: rec.end,
+                virtual_base_address: rec.address,
+                source_device_id: rec.srcId,
+                destination_device_id: rec.dstId,
+                stream_id: rec.streamId,
+                process_id: rec.processId,
+                migration_cause: MigrationCause::from_repr(rec.flags)
+                    .ok_or(CuptirError::Corrupted)?,
+            })
+        }
+    }
+
+    /// A UVM counter activity record
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+    pub enum CounterRecord {
+        BytesTransferHtoD(BytesTransfer),
+        BytesTransferDtoH(BytesTransfer),
+        CpuPageFaultCount,
+        GpuPageFault,
+        Thrashing,
+        Throttling,
+        RemoteMap,
+        // TODO: figure out whether [BytesTransfer] is the right choice here. Although
+        // plausible, the docs don't mention anything about how to properly interpret
+        // the fields.
+        BytesTransferDtoD(BytesTransfer),
+        Count,
+        Unknown,
+    }
+
+    impl TryFrom<&sys::CUpti_ActivityUnifiedMemoryCounter3> for CounterRecord {
+        type Error = CuptirError;
+
+        fn try_from(value: &sys::CUpti_ActivityUnifiedMemoryCounter3) -> Result<Self, Self::Error> {
+            let kind: CounterKind = value.counterKind.try_into()?;
+            Ok(match kind {
+                CounterKind::Unknown => Self::Unknown,
+                CounterKind::BytesTransferHtod => {
+                    Self::BytesTransferHtoD(BytesTransfer::try_from_record_unchecked(value)?)
+                }
+                CounterKind::BytesTransferDtoh => {
+                    Self::BytesTransferDtoH(BytesTransfer::try_from_record_unchecked(value)?)
+                }
+                CounterKind::BytesTransferDtod => {
+                    Self::BytesTransferDtoD(BytesTransfer::try_from_record_unchecked(value)?)
+                }
+                // TODO: the ones below:
+                CounterKind::CpuPageFaultCount => Self::CpuPageFaultCount,
+                CounterKind::GpuPageFault => Self::GpuPageFault,
+                CounterKind::Thrashing => Self::Thrashing,
+                CounterKind::Throttling => Self::Throttling,
+                CounterKind::RemoteMap => Self::RemoteMap,
+            })
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-pub struct UnifiedMemoryCounterRecord {
-    pub counter_kind: UnifiedMemoryCounterKind,
-    pub value: u64,
-    pub start: u64,
-    pub end: u64,
-    pub address: u64,
-    pub src_id: u32,
-    pub dst_id: u32,
-    pub stream_id: u32,
-    pub process_id: u32,
-    pub flags: u32,
-    pub pad: u32,
-    pub processors: [u64; 5usize],
-}
-
-impl TryFrom<&sys::CUpti_ActivityUnifiedMemoryCounter3> for UnifiedMemoryCounterRecord {
-    type Error = CuptirError;
-
-    fn try_from(value: &sys::CUpti_ActivityUnifiedMemoryCounter3) -> Result<Self, Self::Error> {
-        Ok(UnifiedMemoryCounterRecord {
-            counter_kind: value.counterKind.try_into()?,
-            value: value.value,
-            start: value.start,
-            end: value.end,
-            address: value.address,
-            src_id: value.srcId,
-            dst_id: value.dstId,
-            stream_id: value.streamId,
-            process_id: value.processId,
-            flags: value.flags,
-            pad: value.pad,
-            processors: value.processors,
-        })
-    }
-}
-
+/// An activity record.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub enum Record {
@@ -525,7 +582,7 @@ pub enum Record {
     Memcpy(MemcpyRecord),
     Memory(MemoryRecord),
     MemoryPool(MemoryPoolRecord),
-    UnifiedMemoryCounter(UnifiedMemoryCounterRecord),
+    UnifiedMemoryCounter(uvm::CounterRecord),
 }
 
 impl Record {
@@ -598,6 +655,7 @@ impl Record {
     }
 }
 
+/// Callback CUPTI uses to request a new activity record buffer.
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn buffer_requested_callback(
     buffer: *mut *mut u8,
@@ -617,6 +675,7 @@ pub(crate) extern "C" fn buffer_requested_callback(
     }
 }
 
+/// Callback CUPTI uses to flush an activity record buffer.
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn buffer_complete_callback(
     _context: cudarc::driver::sys::CUcontext,
@@ -635,6 +694,7 @@ pub(crate) extern "C" fn buffer_complete_callback(
     }
 }
 
+/// Builder to help configure the CUPTI Activity API
 #[derive(Default)]
 pub struct Builder {
     enabled_kinds: HashSet<Kind>,
@@ -651,13 +711,14 @@ pub struct Builder {
     allocation_source: bool,
     disable_all_sync_records: bool,
 
-    unified_memory_counter_configs: HashSet<UnifiedMemoryCounterConfig>,
+    unified_memory_counter_configs: HashSet<uvm::CounterConfig>,
 
     flush_period: Option<NonZero<u32>>,
 }
 
+/// Context for the CUPTI Activity API
 #[derive(Debug, Default)]
-pub struct Context {
+pub(crate) struct Context {
     enabled_kinds: Vec<Kind>,
     enabled_driver_functions: Vec<driver::Function>,
     enabled_runtime_functions: Vec<runtime::Function>,
@@ -728,7 +789,7 @@ impl Builder {
     }
 
     /// Set whether latency timestamps should be enabled, which deliver the `queued` and
-    /// `submitted` fields for [activity::KernelRecord] event records.
+    /// `submitted` fields for [KernelRecord] event records.
     ///
     /// Disabled by default.
     pub fn latency_timestamps(mut self, enabled: bool) -> Self {
@@ -756,7 +817,7 @@ impl Builder {
     /// Set the unified memory counter configurations.
     pub fn with_unified_memory_counter_configs(
         mut self,
-        configs: impl IntoIterator<Item = UnifiedMemoryCounterConfig>,
+        configs: impl IntoIterator<Item = uvm::CounterConfig>,
     ) -> Self {
         self.unified_memory_counter_configs.extend(configs);
         self

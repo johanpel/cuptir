@@ -72,10 +72,11 @@ fn generate_safe_enums(source: &syn::File) -> TokenStream {
                             .unwrap()
                             .to_owned();
 
-                        // CUPTI often declares three sentinel variants.
+                        // CUPTI often declares some combination of four possible
+                        // sentinel variants.
                         // - <X>_INVALID, with underlying value 0,
-                        // - <X>_SIZE, to help determine the number of valid
-                        //   variants within an enum,
+                        // - <X>_SIZE and <X>_COUNT, to help determine the number of
+                        //   valid variants within an enum,
                         // - <X>_FORCE_INT, to force the C compiler to use a 32-bit
                         //   representation as underlying type.
                         //
@@ -84,6 +85,7 @@ fn generate_safe_enums(source: &syn::File) -> TokenStream {
                         let src_ident = src_enum.ident.clone();
                         if !(tgt_variant_name.eq("INVALID")
                             || tgt_variant_name.eq("SIZE")
+                            || tgt_variant_name.eq("COUNT")
                             || tgt_variant_name.contains("FORCE_INT"))
                         {
                             let src_variant_ident = format_ident!("{}", src_variant);
@@ -269,15 +271,6 @@ fn generate_function_param_structs(source: &syn::File) -> TokenStream {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let trace = std::fs::File::create("build_trace.log")?;
-    tracing_subscriber::fmt()
-        .with_writer(trace)
-        .with_ansi(false)
-        .with_env_filter(tracing_subscriber::EnvFilter::new(
-            "off,build_script_build=trace",
-        ))
-        .init();
-
     println!("cargo::rerun-if-changed=src/gen/wrapper.h");
 
     // Setup bindgen similar to cudarc so we can potentially upstream this later.
