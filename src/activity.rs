@@ -1396,21 +1396,28 @@ pub(crate) mod test {
             },
         )?;
 
-        dbg!(&recs);
-
         // Without completely unraveling the implementation details of UVM by checking
         // every record, check whether we observe at least one page fault on host and
-        // gpu and at least one migration in both directions.
+        // gpu and at least one migration in both directions, and that we went the same
+        // amount of times in either direction, with the same amount of bytes.
         let mut num_page_faults_cpu = 0;
         let mut num_page_faults_gpu = 0;
         let mut num_migrations_h2d = 0;
+        let mut num_h2d_bytes = 0;
         let mut num_migrations_d2h = 0;
+        let mut num_d2h_bytes = 0;
 
         for rec in recs.into_iter() {
             match rec {
                 Record::UnifiedMemoryCounter(counter_record) => match counter_record {
-                    uvm::CounterRecord::BytesTransferHtoD(_) => num_migrations_h2d += 1,
-                    uvm::CounterRecord::BytesTransferDtoH(_) => num_migrations_d2h += 1,
+                    uvm::CounterRecord::BytesTransferHtoD(transfer) => {
+                        num_migrations_h2d += 1;
+                        num_h2d_bytes += transfer.memory_region_bytes;
+                    }
+                    uvm::CounterRecord::BytesTransferDtoH(transfer) => {
+                        num_migrations_d2h += 1;
+                        num_d2h_bytes += transfer.memory_region_bytes;
+                    }
                     uvm::CounterRecord::CpuPageFaultCount => num_page_faults_cpu += 1,
                     uvm::CounterRecord::GpuPageFault => num_page_faults_gpu += 1,
                     _ => (),
@@ -1423,6 +1430,9 @@ pub(crate) mod test {
         assert!(num_page_faults_gpu > 1);
         assert!(num_migrations_h2d > 1);
         assert!(num_migrations_d2h > 1);
+        assert_eq!(num_page_faults_cpu, num_page_faults_gpu);
+        assert_eq!(num_migrations_h2d, num_migrations_d2h);
+        assert_eq!(num_h2d_bytes, num_d2h_bytes);
 
         Ok(())
     }
