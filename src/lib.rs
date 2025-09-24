@@ -133,7 +133,6 @@ impl ContextBuilder {
 
 #[cfg(test)]
 mod tests {
-    use cuptir_example_utils::run_a_kernel;
     use serial_test::serial;
 
     use super::*;
@@ -141,9 +140,11 @@ mod tests {
     use cudarc::cupti::result::CuptiError;
     use cudarc::cupti::sys;
 
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
+
     #[test]
     #[serial]
-    fn make_context() -> std::result::Result<(), CuptirError> {
+    fn make_context() -> TestResult {
         let _context = Context::builder().build()?;
         Ok(())
     }
@@ -162,81 +163,5 @@ mod tests {
                     sys::CUptiResult::CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED
                 ))
         );
-    }
-
-    #[test]
-    #[serial]
-    fn activity_api() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        use std::sync::{Arc, Mutex};
-        let records: Arc<Mutex<Vec<activity::Record>>> = Arc::new(Mutex::new(vec![]));
-
-        let recs_cb = Arc::clone(&records);
-        crate::activity::test::reset_handler();
-        let context = ContextBuilder::new()
-            .with_activity(
-                activity::Builder::new()
-                    .with_record_buffer_handler(move |buffer| {
-                        recs_cb.lock().unwrap().extend(
-                            buffer
-                                .into_iter()
-                                .filter_map(|maybe_record| maybe_record.ok()),
-                        );
-                        Ok(())
-                    })
-                    .with_kinds([activity::Kind::ConcurrentKernel]),
-            )
-            .build()?;
-
-        run_a_kernel()?;
-
-        drop(context);
-
-        let recs = records.lock().unwrap();
-        assert_eq!(recs.len(), 1);
-        match &recs[0] {
-            activity::Record::Kernel(rec) => {
-                assert!(rec.name.as_ref().is_some_and(|name| name.contains("sin")));
-            }
-            _ => panic!("unexpected record kind"),
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    #[serial]
-    fn callback_api() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        use std::sync::{Arc, atomic::AtomicU8};
-        let count = Arc::new(AtomicU8::new(0));
-        let count_cb = Arc::clone(&count);
-        let context = ContextBuilder::new()
-            .with_callback(
-                callback::Builder::new()
-                    .with_driver_functions([driver::Function::cuDeviceGetCount])
-                    .with_handler(move |data| {
-                        match data {
-                            callback::Data::DriverApi(rec) => match rec.function {
-                                driver::Function::cuDeviceGetCount => {
-                                    count_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                _ => (),
-                            },
-                            _ => (),
-                        };
-                        Ok(())
-                    }),
-            )
-            .build()?;
-
-        // Init the driver and get the device count. This should result in two
-        // callbacks, one for the enter site and one for the exit site.
-        cudarc::driver::result::init()?;
-        let _ = cudarc::driver::result::device::get_count()?;
-
-        drop(context);
-
-        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2);
-
-        Ok(())
     }
 }

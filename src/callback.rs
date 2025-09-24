@@ -421,3 +421,59 @@ impl Drop for Context {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use serial_test::serial;
+
+    use super::*;
+
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    #[serial]
+    fn callback_api() -> TestResult {
+        use std::sync::{Arc, atomic::AtomicU8};
+        let driver_count = Arc::new(AtomicU8::new(0));
+        let driver_count_cb = Arc::clone(&driver_count);
+
+        let runtime_count = Arc::new(AtomicU8::new(0));
+        let runtime_count_cb = Arc::clone(&runtime_count);
+
+        let context = Builder::new()
+            .with_driver_functions([driver::Function::cuMemGetInfo_v2])
+            .with_runtime_functions([runtime::Function::cudaMemGetInfo_v3020])
+            .with_handler(move |data| {
+                match data {
+                    Data::DriverApi(rec) => match rec.function {
+                        driver::Function::cuMemGetInfo_v2 => {
+                            driver_count_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            assert_eq!(rec.function_name().unwrap(), "cuMemGetInfo_v2")
+                        }
+                        _ => (),
+                    },
+                    Data::RuntimeApi(rec) => match rec.function {
+                        runtime::Function::cudaMemGetInfo_v3020 => {
+                            runtime_count_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            assert_eq!(rec.function_name().unwrap(), "cudaMemGetInfo_v3020")
+                        }
+                        _ => (),
+                    },
+                    _ => (),
+                };
+                Ok(())
+            })
+            .build()?;
+
+        // Use the runtime API which in turn will use the driver. This should result in
+        // two callbacks for both, one for function entry and one for exit.
+        cudarc::runtime::result::get_mem_info()?;
+
+        drop(context);
+
+        assert_eq!(driver_count.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(runtime_count.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+        Ok(())
+    }
+}

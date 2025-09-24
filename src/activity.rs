@@ -9,7 +9,7 @@ use std::{
     alloc::{Layout, alloc, dealloc},
     collections::HashSet,
     num::NonZero,
-    sync::OnceLock,
+    sync::RwLock,
 };
 
 use cudarc::cupti::{
@@ -128,10 +128,10 @@ impl Iterator for RecordBufferIterator {
                     None
                 }
             }
-        } else if !self.current_record_ptr.is_null() {
-            Some(unsafe { Record::try_from_record_ptr(self.current_record_ptr) })
-        } else {
+        } else if self.current_record_ptr.is_null() {
             None
+        } else {
+            Some(unsafe { Record::try_from_record_ptr(self.current_record_ptr) })
         }
     }
 }
@@ -143,22 +143,41 @@ pub type RecordBufferHandlerFn =
 /// Globally accessible callback to handle activity record buffers.
 ///
 /// Because the buffer complete callback doesn't have a way of passing custom data, e.g.
-/// a reference to the Context, this is needed to get to the Rust callback for  record
-/// processing.
-pub(crate) static RECORD_BUFFER_HANDLER: OnceLock<Box<RecordBufferHandlerFn>> = OnceLock::new();
+/// a reference to the Context, this is needed to get to the Rust callback for record
+/// processing. This is a RwLock because this allows dropping e.g. captured
+/// [std::sync::Arc]s such that after the [Context] drops, inner values can be taken out
+/// of the Arc.
+pub(crate) static RECORD_BUFFER_HANDLER: RwLock<Option<Box<RecordBufferHandlerFn>>> =
+    RwLock::new(None);
 
 /// Sets the activity record handler. This can be only called once.
 pub(crate) fn set_record_buffer_handler(
-    activity_record_buffer_handler: Box<RecordBufferHandlerFn>,
+    activity_record_buffer_handler: Option<Box<RecordBufferHandlerFn>>,
 ) -> Result<(), CuptirError> {
-    RECORD_BUFFER_HANDLER
-        .set(activity_record_buffer_handler)
-        .map_err(|_| CuptirError::ActivityRecordBufferHandler("can only be set once".into()))
+    let mut lock = RECORD_BUFFER_HANDLER.try_write().map_err(|e| {
+        CuptirError::ActivityRecordBufferHandler(format!(
+            "Unable to set record buffer handler: {e}"
+        ))
+    })?;
+    // Practically prevent multiple activity contexts from existing at the same time
+    if lock.is_some() && activity_record_buffer_handler.is_some() {
+        Err(CuptirError::ActivityRecordBufferHandler(
+            "cannot set activity record buffer handler twice without reset".into(),
+        ))
+    } else {
+        *lock = activity_record_buffer_handler;
+        Ok(())
+    }
 }
 
 /// Calls the global record handler function if it is installed.
 fn handle_record_buffer(record_buffer: RecordBuffer) -> Result<(), CuptirError> {
-    if let Some(handler) = RECORD_BUFFER_HANDLER.get() {
+    let lock = RECORD_BUFFER_HANDLER.read().map_err(|e| {
+        CuptirError::ActivityRecordBufferHandler(format!(
+            "Unable to access record buffer handler: {e}"
+        ))
+    })?;
+    if let Some(handler) = lock.as_ref() {
         handler(record_buffer).map_err(|e| CuptirError::ActivityRecordBufferHandler(e.to_string()))
     } else {
         warn!("activity records received, but no callback is installed");
@@ -713,6 +732,43 @@ pub(crate) extern "C" fn buffer_complete_callback(
     }
 }
 
+/// Context for the CUPTI Activity API
+#[derive(Debug, Default)]
+pub(crate) struct Context {
+    enabled_kinds: Vec<Kind>,
+    enabled_driver_functions: Vec<driver::Function>,
+    enabled_runtime_functions: Vec<runtime::Function>,
+
+    unified_memory_counter_configs: Vec<sys::CUpti_ActivityUnifiedMemoryCounterConfig>,
+}
+
+impl Context {
+    pub(crate) fn flush_all(forced: bool) -> Result<(), CuptirError> {
+        trace!("flushing activity buffer");
+        result::activity::flush_all(if forced {
+            sys::CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_FLUSH_FORCED as u32
+        } else {
+            0
+        })?;
+        Ok(())
+    }
+
+    pub(crate) fn enable_unified_memory_counters(&self) -> Result<(), CuptirError> {
+        if !self.unified_memory_counter_configs.is_empty() {
+            unsafe {
+                sys::cuptiActivityConfigureUnifiedMemoryCounter(
+                    self.unified_memory_counter_configs.as_ptr() as *mut _,
+                    self.unified_memory_counter_configs.len() as u32,
+                )
+            }
+            .result()?;
+            Ok(result::activity::enable(Kind::UnifiedMemoryCounter.into())?)
+        } else {
+            Err(CuptirError::Activity("enabling unified memory counters requires enabling the activity kind and supplying counter configurations".into()))
+        }
+    }
+}
+
 /// Builder to help configure the CUPTI Activity API
 #[derive(Default)]
 pub struct Builder {
@@ -733,16 +789,6 @@ pub struct Builder {
     unified_memory_counter_configs: HashSet<uvm::CounterConfig>,
 
     flush_period: Option<NonZero<u32>>,
-}
-
-/// Context for the CUPTI Activity API
-#[derive(Debug, Default)]
-pub(crate) struct Context {
-    enabled_kinds: Vec<Kind>,
-    enabled_driver_functions: Vec<driver::Function>,
-    enabled_runtime_functions: Vec<runtime::Function>,
-
-    unified_memory_counter_configs: Vec<sys::CUpti_ActivityUnifiedMemoryCounterConfig>,
 }
 
 impl Builder {
@@ -885,7 +931,7 @@ impl Builder {
         if anything_enabled {
             if let Some(record_buffer_handler) = self.record_buffer_handler {
                 trace!("registering activity buffer callbacks");
-                set_record_buffer_handler(record_buffer_handler)?;
+                set_record_buffer_handler(Some(record_buffer_handler))?;
                 result::activity::register_callbacks(
                     Some(buffer_requested_callback),
                     Some(buffer_complete_callback),
@@ -998,33 +1044,6 @@ impl Builder {
     }
 }
 
-impl Context {
-    pub(crate) fn flush_all(forced: bool) -> Result<(), CuptirError> {
-        trace!("flushing activity buffer");
-        result::activity::flush_all(if forced {
-            sys::CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_FLUSH_FORCED as u32
-        } else {
-            0
-        })?;
-        Ok(())
-    }
-
-    pub(crate) fn enable_unified_memory_counters(&self) -> Result<(), CuptirError> {
-        if !self.unified_memory_counter_configs.is_empty() {
-            unsafe {
-                sys::cuptiActivityConfigureUnifiedMemoryCounter(
-                    self.unified_memory_counter_configs.as_ptr() as *mut _,
-                    self.unified_memory_counter_configs.len() as u32,
-                )
-            }
-            .result()?;
-            Ok(result::activity::enable(Kind::UnifiedMemoryCounter.into())?)
-        } else {
-            Err(CuptirError::Activity("enabling unified memory counters requires enabling the activity kind and supplying counter configurations".into()))
-        }
-    }
-}
-
 impl Drop for Context {
     fn drop(&mut self) {
         if let Err(error) = Self::flush_all(true) {
@@ -1072,6 +1091,15 @@ impl Drop for Context {
                 warn!("unable to disable activity for runtime function: {error}");
             }
         }
+
+        // Unset the record buffer handler function. We would ideally tell CUPTI to stop
+        // using the buffer completion callbacks by resetting them to nullptrs or
+        // something, or through some explicit API for it, but that does not exist, so
+        // we will handle more records coming in somehow in [handle_record_buffer].
+        trace!("resetting activity record buffer handler");
+        if let Err(e) = set_record_buffer_handler(None) {
+            warn!("unable to reset activity record buffer handler: {e}")
+        }
     }
 }
 
@@ -1079,6 +1107,7 @@ impl Drop for Context {
 pub(crate) mod test {
     use std::sync::{Arc, Mutex};
 
+    use cuptir_example_utils::run_a_kernel;
     use serial_test::serial;
 
     use crate::enums::{DriverFunc, RuntimeFunc};
@@ -1087,13 +1116,35 @@ pub(crate) mod test {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    pub(crate) fn reset_handler() {
-        #[allow(invalid_reference_casting)]
-        unsafe {
-            let lock: &mut OnceLock<Box<RecordBufferHandlerFn>> =
-                &mut *(&RECORD_BUFFER_HANDLER as *const _ as *mut _);
-            lock.take();
-        }
+    pub(crate) fn get_records<F>(
+        builder: Builder,
+        func: F,
+    ) -> Result<Vec<Record>, Box<dyn std::error::Error>>
+    where
+        F: Fn(&mut Context) -> TestResult,
+    {
+        let records: Arc<Mutex<Vec<Record>>> = Arc::new(Mutex::new(vec![]));
+        let records_cb = Arc::clone(&records);
+
+        let callback = crate::callback::Builder::new().build();
+        let mut activity = builder
+            .with_record_buffer_handler(move |buffer| {
+                records_cb.lock().unwrap().extend(
+                    buffer
+                        .into_iter()
+                        .filter_map(|maybe_record| maybe_record.ok()),
+                );
+                Ok(())
+            })
+            .build()?
+            .unwrap();
+
+        func(&mut activity)?;
+
+        drop(activity);
+        drop(callback);
+
+        Ok(Arc::into_inner(records).unwrap().into_inner()?)
     }
 
     #[test]
@@ -1118,7 +1169,6 @@ pub(crate) mod test {
     fn builder() -> TestResult {
         // Building the default results in no activity context.
         assert!(Builder::new().build().unwrap().is_none());
-
         // Can't build with some kinds enabled but without handler
         assert!(
             Builder::new()
@@ -1126,7 +1176,6 @@ pub(crate) mod test {
                 .build()
                 .is_err()
         );
-
         // Can't build with a handler but without any kind or function enabled.
         assert!(
             Builder::new()
@@ -1134,23 +1183,17 @@ pub(crate) mod test {
                 .build()
                 .is_err()
         );
-
         // Can build with a kind enabled and a handler.
-        reset_handler();
         Builder::new()
             .with_kinds([Kind::ConcurrentKernel])
             .with_record_buffer_handler(|_| Ok(()))
             .build()?;
-
         // Can build with a driver function enabled and a handler.
-        reset_handler();
         Builder::new()
             .with_driver_functions([DriverFunc::cuMemcpy])
             .with_record_buffer_handler(|_| Ok(()))
             .build()?;
-
         // Can build with a kind enabled and a runtime function.
-        reset_handler();
         Builder::new()
             .with_runtime_functions([RuntimeFunc::cudaMemcpy_v3020])
             .with_record_buffer_handler(|_| Ok(()))
@@ -1161,47 +1204,56 @@ pub(crate) mod test {
 
     #[test]
     #[serial]
+    fn make_multiple_contexts_fails() -> TestResult {
+        let _a = Builder::new()
+            .with_kinds([Kind::ConcurrentKernel])
+            .with_record_buffer_handler(|_| Ok(()))
+            .build()?;
+
+        let _b = Builder::new()
+            .with_kinds([Kind::ConcurrentKernel])
+            .with_record_buffer_handler(|_| Ok(()))
+            .build();
+        match _b.unwrap_err() {
+            CuptirError::ActivityRecordBufferHandler(_) => (),
+            _ => panic!("unexpected error"),
+        };
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
     fn driver_and_runtime_kinds() -> TestResult {
-        let records: Arc<Mutex<Vec<Record>>> = Arc::new(Mutex::new(vec![]));
-        let records_cb = Arc::clone(&records);
+        let recs = get_records(
+            Builder::new().with_kinds([Kind::Driver, Kind::Runtime]),
+            |_| {
+                // Do a runtime thing. This causes a large amount driver records to be
+                // generated probably as part of lazy runtime initialization.
+                let ptr = unsafe { cudarc::runtime::result::malloc_sync(1) }?;
 
-        let _callback = crate::callback::Builder::new().build();
-        reset_handler();
-        let _activity = Builder::new()
-            .with_kinds([Kind::Driver, Kind::Runtime])
-            .with_record_buffer_handler(move |buffer| {
-                records_cb.lock().unwrap().extend(
-                    buffer
-                        .into_iter()
-                        .filter_map(|maybe_record| maybe_record.ok()),
-                );
+                // Do a driver thing.
+                unsafe { cudarc::driver::result::free_sync(ptr as u64) }?;
                 Ok(())
-            })
-            .build()?
-            .unwrap();
+            },
+        )?;
 
-        // Do a runtime thing, this causes a large amount driver records to be
-        // generated, including a cuDeviceGetCount, probably as a part of lazy runtime
-        // initialization.
-        let _pointer = unsafe { cudarc::runtime::result::malloc_sync(1) }?;
+        dbg!(&recs);
 
-        Context::flush_all(true)?;
-
-        let recs = records.lock().unwrap();
-
-        let mut num_cu_device_get_count = 0;
         let mut num_cuda_malloc = 0;
+        let mut num_cu_mem_free = 0;
 
         for rec in recs.iter() {
             match rec {
-                Record::DriverApi(d) => {
-                    if d.function == DriverFunc::cuDeviceGetCount {
-                        num_cu_device_get_count += 1;
-                    }
-                }
                 Record::RuntimeApi(r) => {
                     if r.function == RuntimeFunc::cudaMalloc_v3020 {
+                        assert_eq!(r.function_name().unwrap(), "cudaMalloc_v3020");
                         num_cuda_malloc += 1;
+                    }
+                }
+                Record::DriverApi(d) => {
+                    if d.function == DriverFunc::cuMemFree_v2 {
+                        assert_eq!(d.function_name().unwrap(), "cuMemFree_v2");
+                        num_cu_mem_free += 1;
                     }
                 }
                 // Don't care about other records for now :tm:
@@ -1209,54 +1261,60 @@ pub(crate) mod test {
             }
         }
 
-        assert_eq!(num_cu_device_get_count, 1);
         assert_eq!(num_cuda_malloc, 1);
+        assert_eq!(num_cu_mem_free, 1);
 
         Ok(())
     }
 
     #[test]
     #[serial]
+    fn kernel() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let recs = get_records(
+            Builder::new()
+                .with_kinds([Kind::ConcurrentKernel])
+                .latency_timestamps(true),
+            |_| Ok(run_a_kernel()?),
+        )?;
+
+        assert_eq!(recs.len(), 1);
+        match &recs[0] {
+            Record::Kernel(rec) => {
+                assert!(rec.name.as_ref().is_some_and(|name| name.contains("sin")));
+            }
+            _ => panic!("unexpected record kind"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
     fn mem_record_allocate_and_copy() -> TestResult {
-        let records: Arc<Mutex<Vec<Record>>> = Arc::new(Mutex::new(vec![]));
-        let records_cb = Arc::clone(&records);
-
-        let _callback = crate::callback::Builder::new().build();
-        reset_handler();
-        let _activity = Builder::new()
-            .with_kinds([Kind::Memcpy, Kind::Memory2])
-            .with_record_buffer_handler(move |buffer| {
-                records_cb.lock().unwrap().extend(
-                    buffer
-                        .into_iter()
-                        .filter_map(|maybe_record| maybe_record.ok()),
-                );
-                Ok(())
-            })
-            .build()?
-            .unwrap();
-
-        // Round-trip some bytes.
         const SIZE: u64 = 1337;
-        let context = cudarc::driver::CudaContext::new(0)?;
-        let stream = context.default_stream();
-        let host_buffer_a = vec![42u8; SIZE as usize];
-        let mut host_buffer_b = vec![0u8; SIZE as usize];
-        // Record 1: device allocation
-        let mut device_buffer = unsafe { stream.alloc::<u8>(SIZE as usize) }?;
-        // Record 2: memcpy
-        stream.memcpy_htod(&host_buffer_a, &mut device_buffer)?;
-        // Record 3: memcpy
-        stream.memcpy_dtoh(&device_buffer, &mut host_buffer_b)?;
-        // Record 4: device free
-        drop(device_buffer);
-        stream.synchronize()?;
-        // Sanity check
-        assert!(host_buffer_b.into_iter().all(|v| v == 42u8));
 
-        Context::flush_all(true)?;
+        let recs = get_records(
+            Builder::new().with_kinds([Kind::Memcpy, Kind::Memory2]),
+            |_| {
+                // Round-trip some bytes.
+                let context = cudarc::driver::CudaContext::new(0)?;
+                let stream = context.default_stream();
+                let host_buffer_a = vec![42u8; SIZE as usize];
+                let mut host_buffer_b = vec![0u8; SIZE as usize];
+                // Record 1: device allocation
+                let mut device_buffer = unsafe { stream.alloc::<u8>(SIZE as usize) }?;
+                // Record 2: memcpy
+                stream.memcpy_htod(&host_buffer_a, &mut device_buffer)?;
+                // Record 3: memcpy
+                stream.memcpy_dtoh(&device_buffer, &mut host_buffer_b)?;
+                // Record 4: device free
+                drop(device_buffer);
+                stream.synchronize()?;
+                // Sanity check
+                assert!(host_buffer_b.into_iter().all(|v| v == 42u8));
+                Ok(())
+            },
+        )?;
 
-        let recs = records.lock().unwrap();
         assert_eq!(recs.len(), 4);
 
         if let Record::Memory(alloc) = &recs[0] {
@@ -1287,6 +1345,84 @@ pub(crate) mod test {
         } else {
             panic!();
         }
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn unified_memory() -> TestResult {
+        let recs = get_records(
+            Builder::new().with_unified_memory_counter_configs(
+                [
+                    uvm::CounterKind::BytesTransferHtod,
+                    uvm::CounterKind::BytesTransferDtoh,
+                    uvm::CounterKind::CpuPageFaultCount,
+                    uvm::CounterKind::GpuPageFault,
+                ]
+                .into_iter()
+                .map(|kind| uvm::CounterConfig {
+                    scope: uvm::CounterScope::ProcessSingleDevice,
+                    kind,
+                    device_id: 0,
+                    enable: true,
+                }),
+            ),
+            |activity: &mut Context| {
+                let cuda = cudarc::driver::CudaContext::new(0)?;
+                let stream = cuda.default_stream();
+
+                activity.enable_unified_memory_counters()?;
+
+                const SIZE: usize = 1024;
+
+                // Cause host-to-device memory page migrations
+                {
+                    let mut slice = unsafe { cuda.alloc_unified::<u8>(SIZE, true) }?;
+                    let host_slice = slice.as_mut_slice()?;
+                    host_slice.fill(42);
+                    stream.memset_zeros(&mut slice)?;
+                    stream.synchronize()?;
+                }
+                // Cause device-to-host memory page migrations
+                {
+                    let mut slice = unsafe { cuda.alloc_unified::<u8>(SIZE, true) }?;
+                    stream.memset_zeros(&mut slice)?;
+                    stream.synchronize()?;
+                    let host_slice = slice.as_mut_slice()?;
+                    host_slice.fill(42);
+                }
+                Ok(())
+            },
+        )?;
+
+        dbg!(&recs);
+
+        // Without completely unraveling the implementation details of UVM by checking
+        // every record, check whether we observe at least one page fault on host and
+        // gpu and at least one migration in both directions.
+        let mut num_page_faults_cpu = 0;
+        let mut num_page_faults_gpu = 0;
+        let mut num_migrations_h2d = 0;
+        let mut num_migrations_d2h = 0;
+
+        for rec in recs.into_iter() {
+            match rec {
+                Record::UnifiedMemoryCounter(counter_record) => match counter_record {
+                    uvm::CounterRecord::BytesTransferHtoD(_) => num_migrations_h2d += 1,
+                    uvm::CounterRecord::BytesTransferDtoH(_) => num_migrations_d2h += 1,
+                    uvm::CounterRecord::CpuPageFaultCount => num_page_faults_cpu += 1,
+                    uvm::CounterRecord::GpuPageFault => num_page_faults_gpu += 1,
+                    _ => (),
+                },
+                _ => (),
+            }
+        }
+
+        assert!(num_page_faults_cpu > 1);
+        assert!(num_page_faults_gpu > 1);
+        assert!(num_migrations_h2d > 1);
+        assert!(num_migrations_d2h > 1);
 
         Ok(())
     }
