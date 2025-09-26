@@ -452,14 +452,18 @@ mod test {
         runtime_count: &Arc<AtomicU8>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match data {
-            Data::DriverApi(rec) => if rec.function == driver::Function::cuMemGetInfo_v2 {
-                driver_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                assert_eq!(rec.function_name().unwrap(), "cuMemGetInfo_v2")
-            },
-            Data::RuntimeApi(rec) => if rec.function == runtime::Function::cudaMemGetInfo_v3020 {
-                runtime_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                assert_eq!(rec.function_name().unwrap(), "cudaMemGetInfo_v3020")
-            },
+            Data::DriverApi(rec) => {
+                if rec.function == driver::Function::cuMemGetInfo_v2 {
+                    driver_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    assert_eq!(rec.function_name().unwrap(), "cuMemGetInfo_v2")
+                }
+            }
+            Data::RuntimeApi(rec) => {
+                if rec.function == runtime::Function::cudaMemGetInfo_v3020 {
+                    runtime_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    assert_eq!(rec.function_name().unwrap(), "cudaMemGetInfo_v3020")
+                }
+            }
             _ => (),
         };
         Ok(())
