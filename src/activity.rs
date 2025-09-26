@@ -63,7 +63,7 @@ impl RecordBuffer {
     /// If the supplied `ptr` is a nullptr, this function will return an error.
     ///
     /// # Safety
-    /// This resulting [RecordBuffer] takes ownership over the buffer and will
+    /// This resulting [`RecordBuffer`] takes ownership over the buffer and will
     /// deallocate it when dropped.
     fn try_new(ptr: *mut u8, size: usize, valid_size: usize) -> Result<Self, CuptirError> {
         if ptr.is_null() {
@@ -99,7 +99,7 @@ impl IntoIterator for RecordBuffer {
     }
 }
 
-/// An iterator over activity [Record]s in a [RecordBuffer].
+/// An iterator over activity [`Record`]s in a [`RecordBuffer`].
 pub struct RecordBufferIterator {
     buffer: RecordBuffer,
     current_record_ptr: *mut sys::CUpti_Activity,
@@ -111,7 +111,7 @@ impl Iterator for RecordBufferIterator {
     fn next(&mut self) -> Option<Self::Item> {
         // Safety: the buffer can only be constructed with a non-null ptr, plus CUPTI
         // would return a graceful error if it were null.
-        let result = unsafe {
+        let result: Result<(), result::CuptiError> = unsafe {
             result::activity::get_next_record(
                 self.buffer.ptr,
                 self.buffer.valid_size,
@@ -136,7 +136,7 @@ impl Iterator for RecordBufferIterator {
     }
 }
 
-/// Type of callback function used to handle [RecordBuffer]s.
+/// Type of callback function used to handle [`RecordBuffer`]s.
 pub type RecordBufferHandlerFn =
     dyn Fn(RecordBuffer) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync;
 
@@ -145,8 +145,8 @@ pub type RecordBufferHandlerFn =
 /// Because the buffer complete callback doesn't have a way of passing custom data, e.g.
 /// a reference to the Context, this is needed to get to the Rust callback for record
 /// processing. This is a RwLock because this allows dropping e.g. captured
-/// [std::sync::Arc]s such that after the [Context] drops, inner values can be taken out
-/// of the Arc.
+/// [`std::sync::Arc`]s such that after the [`Context`] drops, inner values can be taken
+/// out of the Arc.
 pub(crate) static RECORD_BUFFER_HANDLER: RwLock<Option<Box<RecordBufferHandlerFn>>> =
     RwLock::new(None);
 
@@ -198,7 +198,7 @@ pub type StreamId = u32;
 pub type DeviceId = u32;
 pub type ContextId = u32;
 
-/// Properties shared across of [DriverApiRecord] and [RuntimeApiRecord] activity records.
+/// Properties shared across of [`DriverApiRecord`] and [`RuntimeApiRecord`] activity records.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct ApiProps {
@@ -418,8 +418,8 @@ impl TryFrom<&sys::CUpti_ActivityMemcpy6> for MemcpyRecord {
             graph_node_id: value.graphNodeId,
             graph_id: value.graphId,
             channel_id: value.channelID,
-            channel_type: value.channelType.try_into()?,
             copy_count: value.copyCount,
+            channel_type: value.channelType.try_into()?,
         })
     }
 }
@@ -638,8 +638,8 @@ impl Record {
             return Err(CuptirError::NullPointer);
         }
 
-        // Safety: null check is done at the start of this function, so record dereferences
-        // should be safe.
+        // Safety: null check is done at the start of this function, so record
+        // dereferences should be safe.
         let kind = unsafe { *record_ptr }.kind;
         match kind {
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DRIVER => {
