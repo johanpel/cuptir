@@ -43,7 +43,7 @@ fn setup() -> Result<Context, CuptirError> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cuptir = setup()?;
+    let mut cuptir = setup()?;
 
     let context = cudarc::driver::CudaContext::new(0)?;
     let stream = context.default_stream();

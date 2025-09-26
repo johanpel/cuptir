@@ -1,11 +1,10 @@
 //! Safe wrappers around the CUPTI Callback API.
-use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::{collections::HashSet, sync::RwLock};
 
 use cudarc::{cupti::result, cupti::sys};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::{
     driver,
@@ -26,21 +25,32 @@ pub type HandlerFn =
 /// Because the buffer complete callback doesn't have a way of passing custom data, e.g.
 /// a reference to the Context, this is needed to get to the Rust callback for  record
 /// processing.
-static HANDLER: OnceLock<Box<HandlerFn>> = OnceLock::new();
+static HANDLER: RwLock<Option<Box<HandlerFn>>> = RwLock::new(None);
 
-/// Sets the activity record handler. This can be only called once.
-fn set_handler(handler: Box<HandlerFn>) -> Result<(), CuptirError> {
-    HANDLER
-        .set(handler)
-        .map_err(|_| CuptirError::CallbackHandler("can only be set once".into()))
+/// Sets the activity record handler.
+fn set_handler(handler: Option<Box<HandlerFn>>) -> Result<(), CuptirError> {
+    let mut lock = HANDLER.try_write().map_err(|e| {
+        CuptirError::CallbackHandler(format!("Unable to set callback handler: {e}"))
+    })?;
+    if lock.is_some() && handler.is_some() {
+        Err(CuptirError::CallbackHandler(
+            "cannot set callback handler twice without reset".into(),
+        ))
+    } else {
+        *lock = handler;
+        Ok(())
+    }
 }
 
 /// Calls the global record handler function if it is installed.
-fn handle_callback(callback: Data) -> Result<(), CuptirError> {
-    if let Some(handler) = HANDLER.get() {
-        handler(callback).map_err(|e| CuptirError::CallbackHandler(e.to_string()))
+fn handle_callback(data: Data) -> Result<(), CuptirError> {
+    let lock = HANDLER.read().map_err(|e| {
+        CuptirError::ActivityRecordBufferHandler(format!("Unable to access callback handler: {e}"))
+    })?;
+    if let Some(handler) = lock.as_ref() {
+        handler(data).map_err(|e| CuptirError::CallbackHandler(e.to_string()))
     } else {
-        tracing::warn!("callback received, but no callback handler is installed");
+        warn!("callback data received, but no handler is installed");
         Ok(())
     }
 }
@@ -206,7 +216,7 @@ pub(crate) unsafe extern "C" fn handler(
     cbdata: *const ::core::ffi::c_void,
 ) {
     if cbdata.is_null() {
-        tracing::warn!("cupti callback handler called with nullptr for data");
+        warn!("cupti callback handler called with nullptr for data");
         return;
     }
 
@@ -231,11 +241,11 @@ pub(crate) unsafe extern "C" fn handler(
         match maybe_callback {
             Ok(callback) => {
                 if let Err(error) = handle_callback(callback) {
-                    tracing::warn!("cupti callback handler error: {error}")
+                    warn!("cupti callback handler error: {error}")
                 }
             }
             Err(error) => {
-                tracing::warn!("cupti callback data conversion error: {error}")
+                warn!("cupti callback data conversion error: {error}")
             }
         }
     }
@@ -331,7 +341,7 @@ impl Builder {
                         .to_string(),
                 ));
             } else {
-                set_handler(client_handler)?;
+                set_handler(Some(client_handler))?;
                 trace!("subscribing");
                 unsafe {
                     result::subscribe(
@@ -412,12 +422,16 @@ impl Drop for Context {
         if !self.subscriber_handle.is_null() {
             trace!("unsubscribing");
             if let Err(error) = unsafe { result::unsubscribe(self.subscriber_handle) } {
-                tracing::warn!("unable to unsubscribe: {error}");
+                warn!("unable to unsubscribe: {error}");
             }
         }
 
         if !self.user_data.is_null() {
             let _user_data = unsafe { Box::from_raw(self.user_data as *mut usize) };
+        }
+
+        if let Err(err) = set_handler(None) {
+            warn!("unable to reset callback handler: {err}");
         }
     }
 }
@@ -426,47 +440,80 @@ impl Drop for Context {
 mod test {
     use serial_test::serial;
 
+    use std::sync::{Arc, atomic::AtomicU8};
+
     use super::*;
 
     type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 
+    fn test_handler(
+        data: Data,
+        driver_count: &Arc<AtomicU8>,
+        runtime_count: &Arc<AtomicU8>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match data {
+            Data::DriverApi(rec) => match rec.function {
+                driver::Function::cuMemGetInfo_v2 => {
+                    driver_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    assert_eq!(rec.function_name().unwrap(), "cuMemGetInfo_v2")
+                }
+                _ => (),
+            },
+            Data::RuntimeApi(rec) => match rec.function {
+                runtime::Function::cudaMemGetInfo_v3020 => {
+                    runtime_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    assert_eq!(rec.function_name().unwrap(), "cudaMemGetInfo_v3020")
+                }
+                _ => (),
+            },
+            _ => (),
+        };
+        Ok(())
+    }
+
     #[test]
     #[serial]
-    fn callback_api() -> TestResult {
-        use std::sync::{Arc, atomic::AtomicU8};
+    fn with_functions() -> TestResult {
         let driver_count = Arc::new(AtomicU8::new(0));
-        let driver_count_cb = Arc::clone(&driver_count);
-
         let runtime_count = Arc::new(AtomicU8::new(0));
-        let runtime_count_cb = Arc::clone(&runtime_count);
 
         let context = Builder::new()
             .with_driver_functions([driver::Function::cuMemGetInfo_v2])
             .with_runtime_functions([runtime::Function::cudaMemGetInfo_v3020])
-            .with_handler(move |data| {
-                match data {
-                    Data::DriverApi(rec) => match rec.function {
-                        driver::Function::cuMemGetInfo_v2 => {
-                            driver_count_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            assert_eq!(rec.function_name().unwrap(), "cuMemGetInfo_v2")
-                        }
-                        _ => (),
-                    },
-                    Data::RuntimeApi(rec) => match rec.function {
-                        runtime::Function::cudaMemGetInfo_v3020 => {
-                            runtime_count_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            assert_eq!(rec.function_name().unwrap(), "cudaMemGetInfo_v3020")
-                        }
-                        _ => (),
-                    },
-                    _ => (),
-                };
-                Ok(())
+            .with_handler({
+                let d = Arc::clone(&driver_count);
+                let r = Arc::clone(&runtime_count);
+                move |data| test_handler(data, &d, &r)
             })
             .build()?;
 
         // Use the runtime API which in turn will use the driver. This should result in
         // two callbacks for both, one for function entry and one for exit.
+        cudarc::runtime::result::get_mem_info()?;
+
+        drop(context);
+
+        assert_eq!(driver_count.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(runtime_count.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn with_domains() -> TestResult {
+        let driver_count = Arc::new(AtomicU8::new(0));
+        let runtime_count = Arc::new(AtomicU8::new(0));
+
+        let context = Builder::new()
+            .with_domains([Domain::DriverApi, Domain::RuntimeApi])
+            .with_handler({
+                let d = Arc::clone(&driver_count);
+                let r = Arc::clone(&runtime_count);
+                move |data| test_handler(data, &d, &r)
+            })
+            .build()?;
+
         cudarc::runtime::result::get_mem_info()?;
 
         drop(context);

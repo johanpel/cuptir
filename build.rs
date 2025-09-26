@@ -86,7 +86,7 @@ fn generate_safe_enums(source: &syn::File) -> TokenStream {
                     if !(tgt_variant_name.eq("INVALID")
                         || tgt_variant_name.eq("SIZE")
                         || tgt_variant_name.eq("COUNT")
-                        || tgt_variant_name.contains("FORCE_INT"))
+                        || tgt_variant_name.eq("FORCE_INT"))
                     {
                         let src_variant_ident = format_ident!("{}", src_variant);
                         // Special case for the callback names, we want to

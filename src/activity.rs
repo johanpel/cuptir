@@ -4,7 +4,7 @@
 //!
 //! Please refer to [the CUPTI
 //! documentation](https://docs.nvidia.com/cupti/api/group__CUPTI__ACTIVITY__API.html#_CPPv418CUpti_ActivityKind)
-//! to understand which activity kinds relate to which type of record.
+//! to understand which activity [`Kind`]s relate to which type of record.
 use std::{
     alloc::{Layout, alloc, dealloc},
     collections::HashSet,
@@ -150,7 +150,7 @@ pub type RecordBufferHandlerFn =
 pub(crate) static RECORD_BUFFER_HANDLER: RwLock<Option<Box<RecordBufferHandlerFn>>> =
     RwLock::new(None);
 
-/// Sets the activity record handler. This can be only called once.
+/// Sets the activity record handler.
 pub(crate) fn set_record_buffer_handler(
     activity_record_buffer_handler: Option<Box<RecordBufferHandlerFn>>,
 ) -> Result<(), CuptirError> {
@@ -180,7 +180,7 @@ fn handle_record_buffer(record_buffer: RecordBuffer) -> Result<(), CuptirError> 
     if let Some(handler) = lock.as_ref() {
         handler(record_buffer).map_err(|e| CuptirError::ActivityRecordBufferHandler(e.to_string()))
     } else {
-        warn!("activity records received, but no callback is installed");
+        warn!("activity record buffer received, but no handler is installed");
         Ok(())
     }
 }
@@ -196,6 +196,7 @@ pub type ThreadId = u32;
 pub type CorrelationId = u32;
 pub type StreamId = u32;
 pub type DeviceId = u32;
+pub type ContextId = u32;
 
 /// Properties shared across of [DriverApiRecord] and [RuntimeApiRecord] activity records.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -434,10 +435,10 @@ pub struct MemoryRecord {
     pub bytes: u64,
     pub timestamp: u64,
     pub pc: u64,
-    pub process_id: u32,
-    pub device_id: u32,
-    pub context_id: u32,
-    pub stream_id: u32,
+    pub process_id: ProcessId,
+    pub device_id: DeviceId,
+    pub context_id: ContextId,
+    pub stream_id: StreamId,
     pub name: Option<String>,
     pub is_async: u32,
     // TODO: this union:
@@ -475,8 +476,8 @@ pub struct MemoryPoolRecord {
     pub memory_pool_operation_type: MemoryPoolOperationType,
     pub memory_pool_type: MemoryPoolType,
     pub correlation_id: u32,
-    pub process_id: u32,
-    pub device_id: u32,
+    pub process_id: ProcessId,
+    pub device_id: DeviceId,
     pub min_bytes_to_keep: usize,
     pub address: u64,
     pub size: u64,
@@ -753,8 +754,9 @@ impl Context {
         Ok(())
     }
 
-    pub(crate) fn enable_unified_memory_counters(&self) -> Result<(), CuptirError> {
+    pub(crate) fn enable_unified_memory_counters(&mut self) -> Result<(), CuptirError> {
         if !self.unified_memory_counter_configs.is_empty() {
+            trace!("enabling activity records for unified memory counters");
             unsafe {
                 sys::cuptiActivityConfigureUnifiedMemoryCounter(
                     self.unified_memory_counter_configs.as_ptr() as *mut _,
@@ -762,9 +764,94 @@ impl Context {
                 )
             }
             .result()?;
-            Ok(result::activity::enable(Kind::UnifiedMemoryCounter.into())?)
+            result::activity::enable(Kind::UnifiedMemoryCounter.into())?;
+            self.enabled_kinds.push(Kind::UnifiedMemoryCounter);
+            Ok(())
         } else {
-            Err(CuptirError::Activity("enabling unified memory counters requires enabling the activity kind and supplying counter configurations".into()))
+            Err(CuptirError::Activity("enabling activity records for unified memory counters requires enabling the activity kind and supplying counter configurations".into()))
+        }
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        if let Err(error) = Self::flush_all(true) {
+            warn!("unable to flush activity buffer: {error}")
+        }
+
+        // Ideally we want to disable the unified memory counters here by setting enable
+        // to zero as shown below, but this results in CUPTI_ERROR_INVALID_OPERATION. It
+        // is not clear from the CUPTI docs why this isn't allowed.
+
+        // if !self.unified_memory_counter_configs.is_empty() {
+        //     trace!(
+        //         "disabling
+        //     activity record collection for unified memory counters"
+        //     );
+        //     self.unified_memory_counter_configs
+        //         .iter_mut()
+        //         .for_each(|counter| counter.enable = 0);
+        //     if let Err(error) = unsafe {
+        //         sys::cuptiActivityConfigureUnifiedMemoryCounter(
+        //             self.unified_memory_counter_configs.as_ptr() as *mut _,
+        //             self.unified_memory_counter_configs.len() as u32,
+        //         )
+        //     }
+        //     .result()
+        //     {
+        //         warn!("unable to disable unified memory counters: {error}");
+        //     }
+        // }
+
+        if !self.enabled_kinds.is_empty() {
+            trace!(
+                "disabling activity record collection for kinds: {:?}",
+                self.enabled_kinds
+            );
+            if let Err(error) = self
+                .enabled_kinds
+                .iter()
+                .try_for_each(|activity_kind| result::activity::disable((*activity_kind).into()))
+            {
+                warn!("unable to disable activity kind: {error}");
+            }
+        }
+
+        if !self.enabled_driver_functions.is_empty() {
+            trace!(
+                "disabling activity record collection for functions: {:?}",
+                self.enabled_driver_functions
+            );
+            if let Err(error) = self
+                .enabled_driver_functions
+                .iter()
+                .try_for_each(|func| result::activity::enable_driver_api(func.into(), 0))
+            {
+                warn!("unable to disable activity for driver function: {error}");
+            }
+        }
+
+        if !self.enabled_runtime_functions.is_empty() {
+            trace!(
+                "disabling activity record collection for runtime functions: {:?}",
+                self.enabled_runtime_functions
+            );
+            if let Err(error) = self
+                .enabled_runtime_functions
+                .iter()
+                .try_for_each(|func| result::activity::enable_runtime_api(func.into(), 0))
+            {
+                warn!("unable to disable activity for runtime function: {error}");
+            }
+        }
+
+        // Unset the record buffer handler function. We would ideally tell CUPTI to stop
+        // using the buffer completion callbacks by resetting them to nullptrs or
+        // something, or through some explicit API for it, but that does not exist, so
+        // we will handle more records coming in somehow in [handle_record_buffer].
+        trace!("resetting activity record buffer handler");
+        if let Err(e) = set_record_buffer_handler(None) {
+            warn!("unable to reset activity record buffer handler: {e}")
         }
     }
 }
@@ -1044,65 +1131,6 @@ impl Builder {
     }
 }
 
-impl Drop for Context {
-    fn drop(&mut self) {
-        if let Err(error) = Self::flush_all(true) {
-            warn!("unable to flush activity buffer: {error}")
-        }
-
-        if !self.enabled_kinds.is_empty() {
-            trace!(
-                "disabling activity record collection for kinds: {:?}",
-                self.enabled_kinds
-            );
-            if let Err(error) = self
-                .enabled_kinds
-                .iter()
-                .try_for_each(|activity_kind| result::activity::disable((*activity_kind).into()))
-            {
-                warn!("unable to disable activity kind: {error}");
-            }
-        }
-
-        if !self.enabled_driver_functions.is_empty() {
-            trace!(
-                "disabling activity record collection for functions: {:?}",
-                self.enabled_driver_functions
-            );
-            if let Err(error) = self
-                .enabled_driver_functions
-                .iter()
-                .try_for_each(|func| result::activity::enable_driver_api(func.into(), 0))
-            {
-                warn!("unable to disable activity for driver function: {error}");
-            }
-        }
-
-        if !self.enabled_runtime_functions.is_empty() {
-            trace!(
-                "disabling activity record collection for runtime functions: {:?}",
-                self.enabled_runtime_functions
-            );
-            if let Err(error) = self
-                .enabled_runtime_functions
-                .iter()
-                .try_for_each(|func| result::activity::enable_runtime_api(func.into(), 0))
-            {
-                warn!("unable to disable activity for runtime function: {error}");
-            }
-        }
-
-        // Unset the record buffer handler function. We would ideally tell CUPTI to stop
-        // using the buffer completion callbacks by resetting them to nullptrs or
-        // something, or through some explicit API for it, but that does not exist, so
-        // we will handle more records coming in somehow in [handle_record_buffer].
-        trace!("resetting activity record buffer handler");
-        if let Err(e) = set_record_buffer_handler(None) {
-            warn!("unable to reset activity record buffer handler: {e}")
-        }
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod test {
     use std::sync::{Arc, Mutex};
@@ -1236,8 +1264,6 @@ pub(crate) mod test {
                 Ok(())
             },
         )?;
-
-        dbg!(&recs);
 
         let mut num_cuda_malloc = 0;
         let mut num_cu_mem_free = 0;

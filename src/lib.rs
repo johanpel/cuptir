@@ -46,6 +46,7 @@ pub struct Context {
 }
 
 impl Context {
+    /// Return a [`ContextBuilder`] which should be used to create a [`Context`].
     pub fn builder() -> ContextBuilder {
         Default::default()
     }
@@ -54,12 +55,12 @@ impl Context {
     /// context.
     ///
     /// This can only be performed after CUDA driver initialization, hence it is not
-    /// performed when using [ContextBuilder::build].
+    /// performed when using [`ContextBuilder::build`].
     ///
     /// This requires the activity context to be initialized, see
     /// [ContextBuilder::with_activity].
-    pub fn activity_enable_unified_memory_counters(&self) -> Result<(), CuptirError> {
-        if let Some(activity) = &self.activity {
+    pub fn activity_enable_unified_memory_counters(&mut self) -> Result<(), CuptirError> {
+        if let Some(activity) = &mut self.activity {
             activity.enable_unified_memory_counters()
         } else {
             Err(CuptirError::Activity(
@@ -72,7 +73,7 @@ impl Context {
     /// Request to deliver activity records via the buffer completion callback.
     ///
     /// This function has no effect if the activity API is unused. To enable it, see
-    /// [ContextBuilder::with_activity].
+    /// [`ContextBuilder::with_activity`].
     ///
     /// When forced is false, only complete records are flushed. When forced is true,
     /// incomplete records may be flushed.
@@ -85,7 +86,7 @@ impl Context {
     }
 }
 
-/// Builder to help initialize a [Context].
+/// Builder to help initialize a [`Context`].
 #[derive(Default)]
 pub struct ContextBuilder {
     activity: Option<activity::Builder>,
@@ -97,22 +98,22 @@ impl ContextBuilder {
         Default::default()
     }
 
-    /// Enable the CUPTI activity API, see [activity].
+    /// Enable the CUPTI activity API, see [`activity`].
     pub fn with_activity(mut self, builder: activity::Builder) -> Self {
         self.activity = Some(builder);
         self
     }
 
-    /// Enable the CUPTI callback API, see [callback].
+    /// Enable the CUPTI callback API, see [`callback`].
     pub fn with_callback(mut self, builder: callback::Builder) -> Self {
         self.callback = Some(builder);
         self
     }
 
-    /// Build the [Context].
+    /// Build the [`Context`].
     ///
-    /// This function can fail if there is another Context or any other type of CUPTI
-    /// subscriber.
+    /// This function will fail if there is another [`Context`] or any other type of
+    /// CUPTI subscriber.
     pub fn build(self) -> Result<Context, CuptirError> {
         // Callback needs to be built first because it subscribes as a CUPTI client,
         // which needs to be done before anything else.
