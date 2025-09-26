@@ -26,5 +26,9 @@ jobs:
           submodules: "true"
       - uses: dtolnay/rust-toolchain@1.88
         id: rust-toolchain
+        with:
+          components: clippy
       - name: Check
         run: cargo check -v --all-targets --features ${{ matrix.version }}
+      - name: Clippy
+        run: cargo clippy -v --all-targets --features ${{ matrix.version }}
