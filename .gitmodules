@@ -1,0 +1,3 @@
+[submodule "thirdparty/cudarc"]
+	path = thirdparty/cudarc
+	url = https://github.com/johanpel/cudarc.git

@@ -9,23 +9,18 @@ use cuptir_example_utils::run_a_kernel;
 fn callback_handler(
     data: cuptir::callback::Data,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    match data {
-        callback::Data::DriverApi(data) => match data.arguments {
-            Some(driver::FunctionParams::cuLaunchKernel(params)) => {
-                let params: &cuptir::cudarc::cupti::sys::cuLaunchKernel_params =
-                    unsafe { &*params };
-                print!(
-                    "{:?}: {:?}, block dims: {}, {}, {}\n",
-                    data.site,
-                    data.symbol_name.unwrap_or_default(),
-                    params.blockDimX,
-                    params.blockDimY,
-                    params.blockDimZ,
-                );
-            }
-            _ => (),
-        },
-        _ => (),
+    if let callback::Data::DriverApi(data) = data
+        && let Some(driver::FunctionParams::cuLaunchKernel(params)) = data.arguments
+    {
+        let params: &cuptir::cudarc::cupti::sys::cuLaunchKernel_params = unsafe { &*params };
+        println!(
+            "{:?}: {:?}, block dims: {}, {}, {}",
+            data.site,
+            data.symbol_name.unwrap_or_default(),
+            params.blockDimX,
+            params.blockDimY,
+            params.blockDimZ,
+        );
     };
     Ok(())
 }

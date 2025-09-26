@@ -1,0 +1,24 @@
+name: Rust
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: 'true'
+      - uses: dtolnay/rust-toolchain@1.88
+        id: rust-toolchain
+        with:
+          components: rustfmt
+      - name: Check
+        run: cargo fmt --all --check
