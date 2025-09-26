@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.88
+        id: rust-toolchain
+        with:
+          components: clippy, rustfmt
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
