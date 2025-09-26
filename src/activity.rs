@@ -1300,7 +1300,7 @@ pub(crate) mod test {
             Builder::new()
                 .with_kinds([Kind::ConcurrentKernel])
                 .latency_timestamps(true),
-            |_| Ok(run_a_kernel()?),
+            |_| run_a_kernel(),
         )?;
 
         assert_eq!(recs.len(), 1);
@@ -1434,8 +1434,8 @@ pub(crate) mod test {
         let mut num_d2h_bytes = 0;
 
         for rec in recs.into_iter() {
-            match rec {
-                Record::UnifiedMemoryCounter(counter_record) => match counter_record {
+            if let Record::UnifiedMemoryCounter(counter_record) = rec {
+                match counter_record {
                     uvm::CounterRecord::BytesTransferHtoD(transfer) => {
                         num_migrations_h2d += 1;
                         num_h2d_bytes += transfer.memory_region_bytes;
@@ -1447,8 +1447,7 @@ pub(crate) mod test {
                     uvm::CounterRecord::CpuPageFaultCount => num_page_faults_cpu += 1,
                     uvm::CounterRecord::GpuPageFault => num_page_faults_gpu += 1,
                     _ => (),
-                },
-                _ => (),
+                }
             }
         }
 
@@ -1465,11 +1464,6 @@ pub(crate) mod test {
 
     #[test]
     pub fn record_nullptr_deref_errors_out() {
-        assert!(
-            unsafe {
-                Record::try_from_record_ptr(std::ptr::null_mut() as *mut sys::CUpti_Activity)
-            }
-            .is_err()
-        )
+        assert!(unsafe { Record::try_from_record_ptr(std::ptr::null_mut()) }.is_err())
     }
 }
