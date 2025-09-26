@@ -29,6 +29,6 @@ jobs:
         with:
           components: clippy
       - name: Check
-        run: cargo check -v --all-targets --features ${{ matrix.version }}
+        run: cargo check -v --workspace --all-targets --exclude cudarc --features ${{ matrix.version }}
       - name: Clippy
-        run: cargo clippy -v --all-targets --features ${{ matrix.version }}
+        run: cargo clippy -v --workspace --all-targets --exclude cudarc --features ${{ matrix.version }}
