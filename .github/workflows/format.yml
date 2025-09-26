@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  format:
     runs-on: ubuntu-latest
 
     steps:
