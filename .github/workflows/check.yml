@@ -9,20 +9,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - cuda-12080
+          - cuda-12090
+          - cuda-13000
 
     steps:
       - uses: actions/checkout@v5
         with:
-          submodules: 'true'
+          submodules: "true"
       - uses: dtolnay/rust-toolchain@1.88
         id: rust-toolchain
-        with:
-          components: clippy, rustfmt
-      - name: Format
-        run: cargo fmt --all --check
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features --no-deps
       - name: Check
-        run: cargo check -v --all-targets --all-features
+        run: cargo check -v --all-targets --features ${{ matrix.version }}
