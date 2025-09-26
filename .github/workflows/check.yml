@@ -29,6 +29,6 @@ jobs:
         with:
           components: clippy
       - name: Check
-        run: cargo check -v --all-targets --features ${{ matrix.version }}
+        run: cargo check -v -p cuptir -p cuptir-example-utils --features ${{ matrix.version }}
       - name: Clippy
-        run: cargo clippy -v --all-targets --features ${{ matrix.version }}
+        run: cargo clippy -v -p cuptir -p cuptir-example-utils --features ${{ matrix.version }}

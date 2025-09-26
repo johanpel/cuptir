@@ -8,7 +8,6 @@ use convert_case::{Boundary, Case};
 use proc_macro2::{TokenStream, TokenTree};
 use quote::{format_ident, quote};
 use syn::{Attribute, Ident, Meta};
-use tracing::level_filters::LevelFilter;
 
 fn longest_common_prefix(items: &[Ident]) -> String {
     if items.is_empty() {
@@ -27,7 +26,7 @@ fn longest_common_prefix(items: &[Ident]) -> String {
     }
 }
 
-// get the enabled cuda feature from the env, if any
+// Get the enabled cuda-<version> feature from the env, if any
 pub fn enabled_cuda_feature() -> Option<String> {
     let prefix = "CARGO_FEATURE_CUDA_";
     for (k, v) in std::env::vars() {
@@ -42,29 +41,29 @@ pub fn enabled_cuda_feature() -> Option<String> {
     None
 }
 
+/// Extract CUDA version-related features from attributes.
 pub fn extract_cuda_features(attr: &Attribute) -> Vec<String> {
     if !attr.path().is_ident("cfg") {
         return Vec::new();
     }
-    let mut hits = Vec::new();
+    let mut cuda_version_features = Vec::new();
     if let Meta::List(list) = &attr.meta {
-        visit_stream(list.tokens.clone(), &mut hits);
+        find_cuda_version_feature_in_stream(list.tokens.clone(), &mut cuda_version_features);
     }
-    let mut seen = std::collections::HashSet::new();
-    hits.into_iter()
-        .filter(|s| seen.insert(s.clone()))
-        .collect()
+    cuda_version_features
 }
 
-fn visit_stream(ts: TokenStream, out: &mut Vec<String>) {
-    for tt in ts {
-        match tt {
-            TokenTree::Group(g) => visit_stream(g.stream(), out),
-            TokenTree::Literal(lit) => {
-                if let Ok(ls) = syn::parse_str::<syn::LitStr>(&lit.to_string()) {
-                    let val = ls.value();
-                    if val.starts_with("cuda-") {
-                        out.push(val);
+/// Given a token stream, figure out either top-level version strings or nested ones
+/// that would appear in a cfg(any(...)) group.
+fn find_cuda_version_feature_in_stream(token_stream: TokenStream, out: &mut Vec<String>) {
+    for token_tree in token_stream {
+        match token_tree {
+            TokenTree::Group(group) => find_cuda_version_feature_in_stream(group.stream(), out),
+            TokenTree::Literal(literal) => {
+                if let Ok(literal_str) = syn::parse_str::<syn::LitStr>(&literal.to_string()) {
+                    let value = literal_str.value();
+                    if value.starts_with("cuda-") {
+                        out.push(value);
                     }
                 }
             }
@@ -73,39 +72,49 @@ fn visit_stream(ts: TokenStream, out: &mut Vec<String>) {
     }
 }
 
-fn skip_item(enabled_feature: &str, attrs: &[Attribute]) -> bool {
+/// Determine whether to skip this item if it doesn't match the version we're building
+/// for.
+fn keep_item(version: &str, attrs: &[Attribute]) -> bool {
     if attrs.is_empty() {
-        false
+        // It has no attributes so it can't be feature-gated by a cuda version feature,
+        // so we want to keep it.
+        true
     } else {
-        let maybe_skip = attrs
+        let keep_mask = attrs
             .iter()
             .filter_map(|attr| {
                 let features = extract_cuda_features(attr);
                 if features.is_empty() {
-                    // not a cuda version feature related cfg attribute
+                    // Not a cuda version feature related cfg attribute, so don't care.
                     None
                 } else if features
                     .iter()
                     .map(String::as_str)
-                    .any(|feature| feature == enabled_feature)
+                    .any(|feature| feature == version)
                 {
-                    // matches the right version
-                    Some(false)
-                } else {
-                    // matches a different version, so skip it.
+                    // A cuda version feature related cfg attribute matching our
+                    // version.
                     Some(true)
+                } else {
+                    // A cuda version feature related cfg attribute not matching our
+                    // version.
+                    Some(false)
                 }
             })
             .collect::<Vec<_>>();
-        if maybe_skip.is_empty() {
-            false
+        if keep_mask.is_empty() {
+            // It had some attributes, but none related to a cuda version feature, so we
+            // need to keep it.
+            true
         } else {
-            maybe_skip.into_iter().any(|v| v)
+            // There is at least one attribute which was a cuda version feature cfg.
+            // Check whether any of them indicated we should keep this.
+            keep_mask.into_iter().any(|v| v)
         }
     }
 }
 
-fn generate_safe_enums(source: &syn::File, enabled_feature: &str) -> TokenStream {
+fn generate_safe_enums(source: &syn::File, version: &str) -> TokenStream {
     // Set up case converters for enums.
     let enum_ident_case_converter = convert_case::Converter::new()
         .add_boundaries(&[Boundary::LOWER_UPPER])
@@ -117,7 +126,7 @@ fn generate_safe_enums(source: &syn::File, enabled_feature: &str) -> TokenStream
     let mut enum_decls = vec![];
     source.items.iter().for_each(|item|
         if let syn::Item::Enum(src_enum) = item {
-            if skip_item(enabled_feature, &src_enum.attrs) {
+            if !keep_item(version, &src_enum.attrs) {
                 return;
             }
 
@@ -283,14 +292,14 @@ fn generate_safe_enums(source: &syn::File, enabled_feature: &str) -> TokenStream
     }
 }
 
-fn generate_function_param_structs(source: &syn::File, enabled_feature: &str) -> TokenStream {
+fn generate_function_param_structs(source: &syn::File, version: &str) -> TokenStream {
     let mut driver_variants = vec![];
     let mut driver_matchers = vec![];
     let mut runtime_variants = vec![];
     let mut runtime_matchers = vec![];
     source.items.iter().for_each(|item|
         if let syn::Item::Struct(src_struct) = item {
-            if skip_item(enabled_feature, &src_struct.attrs) {
+            if !keep_item(version, &src_struct.attrs) {
                 return;
             }
             let src_struct_name = src_struct.ident.to_string();
@@ -367,13 +376,6 @@ fn generate_function_param_structs(source: &syn::File, enabled_feature: &str) ->
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let debug = std::fs::File::create("build_trace.log")?;
-    tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(debug)
-        .with_max_level(LevelFilter::TRACE)
-        .init();
-
     let enabled_feature = enabled_cuda_feature().expect("no cuda version selected");
 
     let mut sys = File::open(
