@@ -70,7 +70,7 @@ impl Context {
         }
     }
 
-    /// Request to deliver activity records via the buffer completion callback.
+    /// Request to deliver activity records.
     ///
     /// This function has no effect if the activity API is unused. To enable it, see
     /// [`ContextBuilder::with_activity`].
