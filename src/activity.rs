@@ -80,10 +80,7 @@ impl RecordBuffer {
 
 impl Drop for RecordBuffer {
     fn drop(&mut self) {
-        let layout = Layout::from_size_align(self.size, CUPTI_BUFFER_ALIGN).unwrap();
-        unsafe {
-            dealloc(self.ptr, layout);
-        }
+        unsafe { buffer_free(self.ptr, self.size) }
     }
 }
 
@@ -109,8 +106,8 @@ impl Iterator for RecordBufferIterator {
     type Item = Result<Record, CuptirError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Safety: the buffer can only be constructed with a non-null ptr, plus CUPTI
-        // would return a graceful error if it were null.
+        // Safety: the buffer can only be constructed with a non-null ptr, plus CUPTI would return a
+        // graceful error if it were null.
         let result: Result<(), result::CuptiError> = unsafe {
             result::activity::get_next_record(
                 self.buffer.ptr,
@@ -142,11 +139,10 @@ pub type RecordBufferHandlerFn =
 
 /// Globally accessible callback to handle activity record buffers.
 ///
-/// Because the buffer complete callback doesn't have a way of passing custom data, e.g.
-/// a reference to the Context, this is needed to get to the Rust callback for record
-/// processing. This is a RwLock because this allows dropping e.g. captured
-/// [`std::sync::Arc`]s such that after the [`Context`] drops, inner values can be taken
-/// out of the Arc.
+/// Because the buffer complete callback doesn't have a way of passing custom data, e.g. a reference
+/// to the Context, this is needed to get to the Rust callback for record processing. This is a
+/// RwLock because this allows dropping e.g. captured [`std::sync::Arc`]s such that after the
+/// [`Context`] drops, inner values can be taken out of the Arc.
 pub(crate) static RECORD_BUFFER_HANDLER: RwLock<Option<Box<RecordBufferHandlerFn>>> =
     RwLock::new(None);
 
@@ -473,16 +469,27 @@ impl TryFrom<&sys::CUpti_ActivityMemory4> for MemoryRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct MemoryPoolRecord {
+    /// The memory pool operation requested by the user.
     pub memory_pool_operation_type: MemoryPoolOperationType,
+    /// The type of the memory pool.
     pub memory_pool_type: MemoryPoolType,
+    /// The correlation ID of the memory pool operation.
     pub correlation_id: u32,
+    /// The ID of the process to which this record belongs to.
     pub process_id: ProcessId,
+    /// The ID of the device where the memory pool is created.
     pub device_id: DeviceId,
-    pub min_bytes_to_keep: usize,
+    /// The minimum bytes to keep of the memory pool. Only valid for trims.
+    pub min_bytes_to_keep: Option<usize>,
+    /// The virtual address of the allocation.
     pub address: u64,
+    /// The size of the memory pool operation in bytes.
     pub size: u64,
+    /// The release threshold of the memory pool.
     pub release_threshold: u64,
+    /// The start timestamp for the memory operation, in ns.
     pub timestamp: u64,
+    /// The utilized size of the memory pool.
     pub utilized_size: u64,
 }
 
@@ -490,13 +497,15 @@ impl TryFrom<&sys::CUpti_ActivityMemoryPool2> for MemoryPoolRecord {
     type Error = CuptirError;
 
     fn try_from(value: &sys::CUpti_ActivityMemoryPool2) -> Result<Self, Self::Error> {
+        let op: MemoryPoolOperationType = value.memoryPoolOperationType.try_into()?;
         Ok(MemoryPoolRecord {
-            memory_pool_operation_type: value.memoryPoolOperationType.try_into()?,
+            memory_pool_operation_type: op,
             memory_pool_type: value.memoryPoolType.try_into()?,
             correlation_id: value.correlationId,
             process_id: value.processId,
             device_id: value.deviceId,
-            min_bytes_to_keep: value.minBytesToKeep,
+            min_bytes_to_keep: matches!(op, MemoryPoolOperationType::Trimmed)
+                .then_some(value.minBytesToKeep),
             address: value.address,
             size: value.size,
             release_threshold: value.releaseThreshold,
@@ -714,6 +723,13 @@ pub(crate) extern "C" fn buffer_requested_callback(
     }
 }
 
+pub(crate) unsafe fn buffer_free(ptr: *mut u8, size: usize) {
+    let layout = Layout::from_size_align(size, CUPTI_BUFFER_ALIGN).unwrap();
+    unsafe {
+        dealloc(ptr, layout);
+    }
+}
+
 /// Callback CUPTI uses to flush an activity record buffer.
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn buffer_complete_callback(
@@ -724,6 +740,10 @@ pub(crate) extern "C" fn buffer_complete_callback(
     valid_size: usize,
 ) {
     trace!("buffer complete - stream id: {stream_id}, size: {size}, valid: {valid_size}");
+    // Quickly return if the buffer is empty.
+    if valid_size == 0 {
+        return unsafe { buffer_free(buffer, size) };
+    }
     // Safety: RecordBuffer::try_new will fail only if buffer is a nullptr, in which
     // case somehow no memory was allocated for the buffer that could be freed.
     if let Err(error) =
@@ -775,13 +795,9 @@ impl Context {
 
 impl Drop for Context {
     fn drop(&mut self) {
-        if let Err(error) = Self::flush_all(true) {
-            warn!("unable to flush activity buffer: {error}")
-        }
-
-        // Ideally we want to disable the unified memory counters here by setting enable
-        // to zero as shown below, but this results in CUPTI_ERROR_INVALID_OPERATION. It
-        // is not clear from the CUPTI docs why this isn't allowed.
+        // Ideally we want to disable the unified memory counters here by setting enable to zero as
+        // shown below, but this results in CUPTI_ERROR_INVALID_OPERATION. It is not clear from the
+        // CUPTI docs why this isn't allowed.
 
         // if !self.unified_memory_counter_configs.is_empty() {
         //     trace!(
@@ -845,10 +861,14 @@ impl Drop for Context {
             }
         }
 
+        if let Err(error) = Self::flush_all(true) {
+            warn!("unable to flush activity buffer: {error}")
+        }
+
         // Unset the record buffer handler function. We would ideally tell CUPTI to stop
         // using the buffer completion callbacks by resetting them to nullptrs or
-        // something, or through some explicit API for it, but that does not exist, so
-        // we will handle more records coming in somehow in [handle_record_buffer].
+        // something, or through some more explicit API for it, but that does not exist,
+        // so we will handle more records coming in somehow in [handle_record_buffer].
         trace!("resetting activity record buffer handler");
         if let Err(e) = set_record_buffer_handler(None) {
             warn!("unable to reset activity record buffer handler: {e}")
@@ -976,7 +996,7 @@ impl Builder {
     }
 
     /// Set the flush period in milliseconds for the underlying CUPTI worker thread.
-    ///  
+    ///
     /// If interval is None, use CUPTI's internal heuristics to determine when to flush,
     /// which is the default mode of operation.
     pub fn flush_period(mut self, milliseconds: Option<NonZero<u32>>) -> Self {
@@ -1135,6 +1155,7 @@ impl Builder {
 pub(crate) mod test {
     use std::sync::{Arc, Mutex};
 
+    use cudarc::driver::CudaContext;
     use cuptir_example_utils::run_a_kernel;
     use serial_test::serial;
 
@@ -1144,17 +1165,25 @@ pub(crate) mod test {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    // tracing_subscriber::fmt()
+    // .with_max_level(tracing::level_filters::LevelFilter::TRACE)
+    // .init();
+
     pub(crate) fn get_records<F>(
         builder: Builder,
         func: F,
     ) -> Result<Vec<Record>, Box<dyn std::error::Error>>
     where
-        F: Fn(&mut Context) -> TestResult,
+        F: Fn(&mut Context, Arc<CudaContext>, Arc<Mutex<Vec<Record>>>) -> TestResult,
     {
+        // We can initialize the Activity API at any time, so ensure there is a CUDA
+        // context attached to this thread.
+        let cuda_context = cudarc::driver::CudaContext::new(0)?;
+
         let records: Arc<Mutex<Vec<Record>>> = Arc::new(Mutex::new(vec![]));
         let records_cb = Arc::clone(&records);
 
-        let callback = crate::callback::Builder::new().build();
+        // let callback = crate::callback::Builder::new().build();
         let mut activity = builder
             .with_record_buffer_handler(move |buffer| {
                 records_cb.lock().unwrap().extend(
@@ -1167,11 +1196,9 @@ pub(crate) mod test {
             .build()?
             .unwrap();
 
-        func(&mut activity)?;
+        func(&mut activity, cuda_context, Arc::clone(&records))?;
 
         drop(activity);
-        drop(callback);
-
         Ok(Arc::into_inner(records).unwrap().into_inner()?)
     }
 
@@ -1190,6 +1217,11 @@ pub(crate) mod test {
         .unwrap();
         let mut iter = buffer.into_iter();
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    pub fn record_nullptr_deref_errors_out() {
+        assert!(unsafe { Record::try_from_record_ptr(std::ptr::null_mut()) }.is_err())
     }
 
     #[test]
@@ -1254,18 +1286,28 @@ pub(crate) mod test {
     fn driver_and_runtime_kinds() -> TestResult {
         let recs = get_records(
             Builder::new().with_kinds([Kind::Driver, Kind::Runtime]),
-            |_| {
-                // Do a runtime thing. This causes a large amount driver records to be
-                // generated probably as part of lazy runtime initialization.
-                let ptr = unsafe { cudarc::runtime::result::malloc_sync(1) }?;
-
+            |_, _, _| {
                 // Do a driver thing.
-                unsafe { cudarc::driver::result::free_sync(ptr as u64) }?;
+                let mut ptr: cudarc::driver::sys::CUdeviceptr = 0;
+                unsafe {
+                    cudarc::driver::sys::cuMemAlloc_v2(&mut ptr, 1).result()?;
+                    cudarc::driver::sys::cuMemFree_v2(ptr).result()?;
+                }
+                // Do a runtime thing. This causes a large amount driver records to be generated
+                // probably as part of lazy runtime initialization.
+                let mut ptr: *mut core::ffi::c_void = std::ptr::null_mut();
+                unsafe {
+                    cudarc::runtime::sys::cudaMalloc(&mut ptr, 1).result()?;
+                    cudarc::runtime::sys::cudaFree(ptr).result()?;
+                }
+
                 Ok(())
             },
         )?;
 
         let mut num_cuda_malloc = 0;
+        let mut num_cuda_free = 0;
+        let mut num_cu_mem_alloc = 0;
         let mut num_cu_mem_free = 0;
 
         for rec in recs.iter() {
@@ -1275,8 +1317,16 @@ pub(crate) mod test {
                         assert_eq!(r.function_name().unwrap(), "cudaMalloc_v3020");
                         num_cuda_malloc += 1;
                     }
+                    if r.function == RuntimeFunc::cudaFree_v3020 {
+                        assert_eq!(r.function_name().unwrap(), "cudaFree_v3020");
+                        num_cuda_free += 1;
+                    }
                 }
                 Record::DriverApi(d) => {
+                    if d.function == DriverFunc::cuMemAlloc_v2 {
+                        assert_eq!(d.function_name().unwrap(), "cuMemAlloc_v2");
+                        num_cu_mem_alloc += 1;
+                    }
                     if d.function == DriverFunc::cuMemFree_v2 {
                         assert_eq!(d.function_name().unwrap(), "cuMemFree_v2");
                         num_cu_mem_free += 1;
@@ -1288,6 +1338,8 @@ pub(crate) mod test {
         }
 
         assert_eq!(num_cuda_malloc, 1);
+        assert_eq!(num_cuda_free, 1);
+        assert_eq!(num_cu_mem_alloc, 1);
         assert_eq!(num_cu_mem_free, 1);
 
         Ok(())
@@ -1300,7 +1352,7 @@ pub(crate) mod test {
             Builder::new()
                 .with_kinds([Kind::ConcurrentKernel])
                 .latency_timestamps(true),
-            |_| run_a_kernel(),
+            |_, _, _| run_a_kernel(),
         )?;
 
         assert_eq!(recs.len(), 1);
@@ -1315,15 +1367,14 @@ pub(crate) mod test {
 
     #[test]
     #[serial]
-    fn mem_record_allocate_and_copy() -> TestResult {
+    fn memory_allocate_and_copy() -> TestResult {
         const SIZE: u64 = 1337;
 
         let recs = get_records(
             Builder::new().with_kinds([Kind::Memcpy, Kind::Memory2]),
-            |_| {
+            |_, cuda_context, _| {
                 // Round-trip some bytes.
-                let context = cudarc::driver::CudaContext::new(0)?;
-                let stream = context.default_stream();
+                let stream = cuda_context.default_stream();
                 let host_buffer_a = vec![42u8; SIZE as usize];
                 let mut host_buffer_b = vec![0u8; SIZE as usize];
                 // Record 1: device allocation
@@ -1377,7 +1428,7 @@ pub(crate) mod test {
 
     #[test]
     #[serial]
-    fn unified_memory() -> TestResult {
+    fn memory_unified() -> TestResult {
         let recs = get_records(
             Builder::new().with_unified_memory_counter_configs(
                 [
@@ -1394,7 +1445,7 @@ pub(crate) mod test {
                     enable: true,
                 }),
             ),
-            |activity: &mut Context| {
+            |activity, _, _| {
                 let cuda = cudarc::driver::CudaContext::new(0)?;
                 let stream = cuda.default_stream();
 
@@ -1422,10 +1473,10 @@ pub(crate) mod test {
             },
         )?;
 
-        // Without completely unraveling the implementation details of UVM by checking
-        // every record, check whether we observe at least one page fault on host and
-        // gpu and at least one migration in both directions, and that we went the same
-        // amount of times in either direction, with the same amount of bytes.
+        // Without completely unraveling the implementation details of UVM by checking every record,
+        // check whether we observe at least one page fault on host and gpu and at least one
+        // migration in both directions, and that we went the same amount of times in either
+        // direction, with the same amount of bytes.
         let mut num_page_faults_cpu = 0;
         let mut num_page_faults_gpu = 0;
         let mut num_migrations_h2d = 0;
@@ -1463,7 +1514,215 @@ pub(crate) mod test {
     }
 
     #[test]
-    pub fn record_nullptr_deref_errors_out() {
-        assert!(unsafe { Record::try_from_record_ptr(std::ptr::null_mut()) }.is_err())
+    #[serial]
+    fn memory_pool() -> TestResult {
+        // Constants must all be powers of 2.
+        // A small pool size is going to be overridden by some minimum pool size in the
+        // implementation, so we need to make it sufficiently large. There seems to be no
+        // documentation on how this minimum is defined, so this test may fail if the implementation
+        // changes (its 32 MiB on my machine :tm:).
+        const POOL_SIZE: usize = 128 * 1024 * 1024;
+        const NUM_ALLOCS: usize = 8;
+        const ALLOC_SIZE: usize = POOL_SIZE / NUM_ALLOCS;
+
+        let recs = get_records(
+            // Even though we're not interested in the alloc/free which are captured using Memory2
+            // records, it seems like CUPTI does not produce any memory pool records when only
+            // MemoryPool is used.
+            Builder::new().with_kinds([Kind::MemoryPool, Kind::Memory2]),
+            |_, cuda, recs| {
+                use cudarc::runtime::sys;
+
+                let stream = cuda.default_stream();
+                // work-around for duplicate definitions in cudarc
+                let stream_rt = unsafe {
+                    std::mem::transmute::<
+                        *mut cudarc::driver::sys::CUstream_st,
+                        *mut cudarc::runtime::sys::CUstream_st,
+                    >(stream.cu_stream())
+                };
+
+                let mut memory_pools_supported: i32 = 0;
+                unsafe {
+                    sys::cudaDeviceGetAttribute(
+                        &mut memory_pools_supported,
+                        sys::cudaDeviceAttr::cudaDevAttrMemoryPoolsSupported,
+                        cuda.ordinal() as i32,
+                    )
+                }
+                .result()?;
+                assert!(memory_pools_supported > 0);
+
+                let props = sys::cudaMemPoolProps {
+                    allocType: sys::cudaMemAllocationType::cudaMemAllocationTypePinned,
+                    handleTypes: sys::cudaMemAllocationHandleType::cudaMemHandleTypeNone,
+                    location: sys::cudaMemLocation {
+                        type_: sys::cudaMemLocationType::cudaMemLocationTypeDevice,
+                        id: cuda.cu_device(),
+                    },
+                    win32SecurityAttributes: std::ptr::null_mut(),
+                    maxSize: POOL_SIZE,
+                    usage: 0,
+                    reserved: [0; 54],
+                };
+
+                // Note on CUDA implementaion details (speculative):
+                //
+                // The first cudaMemPoolCreate does not generate an activity record for creating the
+                // pool. The second cudaMemPoolCreate only generates a record when the first pool
+                // was actually used. This is likely an optimization in the implementation.
+
+                // First create a dummy pool and use it, delete all records of it and then create a
+                // second pool so we can focus the test on records from just this second pool.
+                let mut dummy_pool: sys::cudaMemPool_t = std::ptr::null_mut();
+                let mut dummy_ptr: *mut ::core::ffi::c_void = std::ptr::null_mut();
+                unsafe {
+                    sys::cudaMemPoolCreate(&mut dummy_pool, &props).result()?;
+                    sys::cudaMallocFromPoolAsync(&mut dummy_ptr, 1, dummy_pool, stream_rt)
+                        .result()?;
+                    sys::cudaFreeAsync(dummy_ptr, stream_rt).result()?;
+                    sys::cudaMemPoolDestroy(dummy_pool).result()?;
+                }
+                stream.synchronize()?;
+                Context::flush_all(true)?;
+                recs.lock().unwrap().clear();
+
+                let mut pool: sys::cudaMemPool_t = std::ptr::null_mut();
+                unsafe { sys::cudaMemPoolCreate(&mut pool, &props) }.result()?;
+                let pool_size = POOL_SIZE;
+                unsafe {
+                    sys::cudaMemPoolSetAttribute(
+                        pool,
+                        sys::cudaMemPoolAttr::cudaMemPoolAttrReleaseThreshold,
+                        &pool_size as *const usize as *mut core::ffi::c_void,
+                    )
+                }
+                .result()?;
+
+                // Allocate the entire pool.
+                let mut ptrs = [std::ptr::null_mut(); NUM_ALLOCS];
+                for ptr in ptrs.iter_mut().take(NUM_ALLOCS) {
+                    unsafe { sys::cudaMallocFromPoolAsync(ptr, ALLOC_SIZE, pool, stream_rt) }
+                        .result()?;
+                }
+
+                // Note on CUDA implementation details (speculative):
+                // A stream syncrhonize will trigger a memory pool trim IF there were releases/frees
+                // on the stream since last synchronize. This happens for EVERY pool regardless of
+                // which ones you freed memory for. This is true EVEN when there is nothing to trim
+                // , e.g. when setting a release threshold to the maximum pool size (which means it
+                // should never trim).
+
+                // This means the following synchronize will NOT produce a trim record, since we
+                // haven't released anything yet.
+                stream.synchronize()?;
+
+                // Trim 1: Perform a manual trim and attempt to trim to half the pool size.
+                unsafe { sys::cudaMemPoolTrimTo(pool, POOL_SIZE / 2) }.result()?;
+
+                // Release half of the pool allocations.
+                for ptr in ptrs.iter().take(NUM_ALLOCS / 2) {
+                    unsafe { sys::cudaFreeAsync(*ptr, stream_rt) }.result()?;
+                }
+
+                // Trim 2: When we now synchronize, the first trim record is produced. Even though
+                // there is a record, no trimming should take place since we've set the release
+                // threshold to the pool size.
+                stream.synchronize()?;
+
+                // Trim 3: Now perform a manual trim and attempt to trim to a quarter of the pool
+                // size.
+                unsafe { sys::cudaMemPoolTrimTo(pool, POOL_SIZE / 4) }.result()?;
+
+                // Release the other half of the pool allocations.
+                for ptr in ptrs.iter().take(NUM_ALLOCS).skip(NUM_ALLOCS / 2) {
+                    unsafe { sys::cudaFreeAsync(*ptr, stream_rt) }.result()?;
+                }
+
+                // Destroy the pool. This doesn't create a trim record.
+                unsafe { sys::cudaMemPoolDestroy(pool) }.result()?;
+
+                // Synchronize, this doesn't create a trim record.
+                stream.synchronize()?;
+
+                Ok(())
+            },
+        )?;
+
+        // If you're not running this test on its own, other memory pools may exist that produce
+        // activity records upon synchronization, despite running this with #[serial]. Figure out
+        // which pool is the one that belongs to this test by checking the creation event record's
+        // address.
+        let this_test_pool_address = recs
+            .iter()
+            .find_map(|rec| {
+                if let Record::MemoryPool(r) = rec {
+                    matches!(
+                        r.memory_pool_operation_type,
+                        MemoryPoolOperationType::Created
+                    )
+                    .then_some(r.address)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+
+        let mut num_created = 0;
+        let mut num_trimmed = 0;
+        let mut num_destroyed = 0;
+
+        for r in recs.into_iter().filter_map(|rec| {
+            if let Record::MemoryPool(mem_pool_rec) = rec
+                && mem_pool_rec.address == this_test_pool_address
+            {
+                Some(mem_pool_rec)
+            } else {
+                None
+            }
+        }) {
+            match r.memory_pool_operation_type {
+                crate::enums::ActivityMemoryPoolOperationType::Created => {
+                    num_created += 1;
+                    assert_eq!(r.memory_pool_type, MemoryPoolType::Local);
+                    assert_eq!(r.utilized_size, 0);
+                    assert_eq!(r.release_threshold, 0);
+                    // We can't check the initial size, this is implementation-defined.
+                }
+                crate::enums::ActivityMemoryPoolOperationType::Trimmed => {
+                    num_trimmed += 1;
+                    if num_trimmed == 1 {
+                        // First manual trim. We should be using the entire pool.
+                        assert_eq!(r.memory_pool_type, MemoryPoolType::Local);
+                        assert_eq!(r.release_threshold, POOL_SIZE as u64);
+                        assert_eq!(r.utilized_size, POOL_SIZE as u64);
+                        assert_eq!(r.size, POOL_SIZE as u64);
+                    } else if num_trimmed == 2 {
+                        // Trim due to synchronize, we should see half the pool being used.
+                        assert_eq!(r.memory_pool_type, MemoryPoolType::Local);
+                        assert_eq!(r.release_threshold, POOL_SIZE as u64);
+                        assert_eq!(r.utilized_size, (POOL_SIZE / 2) as u64);
+                        assert_eq!(r.size, POOL_SIZE as u64);
+                    } else if num_trimmed == 3 {
+                        // Manual trim, we should see half the pool being used, and it having
+                        // trimmed down to exactly its usage.
+                        assert_eq!(r.memory_pool_type, MemoryPoolType::Local);
+                        assert_eq!(r.release_threshold, POOL_SIZE as u64);
+                        assert_eq!(r.utilized_size, r.size);
+                    } else {
+                        panic!("unexpected fourth trim record")
+                    }
+                }
+                crate::enums::ActivityMemoryPoolOperationType::Destroyed => {
+                    num_destroyed += 1;
+                }
+            }
+        }
+
+        assert_eq!(num_created, 1);
+        assert_eq!(num_trimmed, 3);
+        assert_eq!(num_destroyed, 1);
+
+        Ok(())
     }
 }
