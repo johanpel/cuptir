@@ -250,9 +250,9 @@ pub struct InternalLaunchApiRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub enum Record {
-    /// A record from the CUDA driver API, enabled through [`Kind::DriverApi`].
+    /// A record from the CUDA driver API, enabled through [`Kind::Driver`].
     DriverApi(DriverApiRecord),
-    /// A record from the CUDA runtime API, enabled through [`Kind::RuntimeApi`].
+    /// A record from the CUDA runtime API, enabled through [`Kind::Runtime`].
     RuntimeApi(RuntimeApiRecord),
     /// A record from the CUDA internal launch API, enabled through [`Kind::InternalLaunchApi`].
     InternalLaunchApi(InternalLaunchApiRecord),
@@ -597,7 +597,7 @@ impl Builder {
     }
 
     /// Set whether latency timestamps should be enabled, which deliver the `queued` and
-    /// `submitted` fields for [KernelRecord] event records.
+    /// `submitted` fields for [`kernel::Record`] event records.
     ///
     /// Disabled by default.
     pub fn latency_timestamps(mut self, enabled: bool) -> Self {
