@@ -1,11 +1,10 @@
 //! Safe wrappers for the CUDA Profiling Tools Interface (CUPTI)
-//!  
+//!
 //! Cuptir provides safe wrappers around the bindings of the CUDA Profiling Tools
 //! Interface (CUPTI) provided by [cudarc](https://docs.rs/cudarc/latest/cudarc/).
 //!
 //! These wrappers are experimental and explorative. At some point they could be
 //! upstreamed to `cudarc`.
-use crate::error::CuptirError;
 
 pub mod activity;
 pub mod callback;
@@ -14,6 +13,7 @@ pub mod error;
 pub mod runtime;
 mod utils;
 
+pub use crate::error::CuptirError;
 // CUPTI exposes pretty much the entirety of public types from the CUDA runtime and
 // driver. In order to be able to work with these types, expose cudarc for now :tm:.
 pub use cudarc;

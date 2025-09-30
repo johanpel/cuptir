@@ -1,10 +1,4 @@
 //! Safe wrappers around the CUPTI Activity API
-//!
-//! # Notes on activity kinds.
-//!
-//! Please refer to [the CUPTI
-//! documentation](https://docs.nvidia.com/cupti/api/group__CUPTI__ACTIVITY__API.html#_CPPv418CUpti_ActivityKind)
-//! to understand which activity [`Kind`]s relate to which type of record.
 use std::{
     alloc::{Layout, alloc, dealloc},
     collections::HashSet,
@@ -14,7 +8,7 @@ use std::{
 
 use cudarc::cupti::{
     result,
-    sys::{self, CUpti_ActivityFlag},
+    sys::{self},
 };
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -26,18 +20,16 @@ use crate::{
     enums::{DriverFunc, RuntimeFunc},
     error::CuptirError,
     runtime,
-    utils::{try_demangle_from_ffi, try_str_from_ffi},
 };
 
-pub type ChannelType = crate::enums::ChannelType;
-pub type FuncShmemLimitConfig = crate::enums::FuncShmemLimitConfig;
+pub mod kernel;
+pub mod memcpy;
+pub mod memory;
+pub mod memory_pool;
+pub mod uvm;
+
+pub use crate::enums::ChannelType;
 pub type Kind = crate::enums::ActivityKind;
-pub type MemcpyKind = crate::enums::ActivityMemcpyKind;
-pub type MemoryKind = crate::enums::ActivityMemoryKind;
-pub type MemoryOperationType = crate::enums::ActivityMemoryOperationType;
-pub type MemoryPoolOperationType = crate::enums::ActivityMemoryPoolOperationType;
-pub type MemoryPoolType = crate::enums::ActivityMemoryPoolType;
-pub type PartitionedGlobalCacheConfig = crate::enums::ActivityPartitionedGlobalCacheConfig;
 
 /// Default CUPTI buffer size.
 ///
@@ -254,388 +246,32 @@ pub struct InternalLaunchApiRecord {
     pub props: ApiProps,
 }
 
-/// Kernel activity record
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-pub struct KernelRecord {
-    // TODO: this union:
-    // pub cache_config: sys::CUpti_ActivityKernel9__bindgen_ty_1,
-    pub shared_memory_config: u8,
-    pub registers_per_thread: u16,
-    pub partitioned_global_cache_requested: PartitionedGlobalCacheConfig,
-    pub partitioned_global_cache_executed: PartitionedGlobalCacheConfig,
-    pub start: Timestamp,
-    pub end: Timestamp,
-    pub completed: Timestamp,
-    pub device_id: u32,
-    pub context_id: u32,
-    pub stream_id: u32,
-    pub grid_x: i32,
-    pub grid_y: i32,
-    pub grid_z: i32,
-    pub block_x: i32,
-    pub block_y: i32,
-    pub block_z: i32,
-    pub static_shared_memory: i32,
-    pub dynamic_shared_memory: i32,
-    pub local_memory_per_thread: u32,
-    pub local_memory_total: u32,
-    pub correlation_id: u32,
-    pub grid_id: i64,
-    pub name: Option<String>,
-    pub queued: Option<Timestamp>,
-    pub submitted: Option<Timestamp>,
-    pub launch_type: u8,
-    pub is_shared_memory_carveout_requested: u8,
-    pub shared_memory_carveout_requested: u8,
-    pub padding: u8,
-    pub shared_memory_executed: u32,
-    pub graph_node_id: u64,
-    pub shmem_limit_config: FuncShmemLimitConfig,
-    pub graph_id: u32,
-    // TODO: this CUDA runtime API type:
-    // pub p_access_policy_window: *mut CUaccessPolicyWindow,
-    pub channel_id: u32,
-    pub cluster_x: u32,
-    pub cluster_y: u32,
-    pub cluster_z: u32,
-    pub cluster_scheduling_policy: u32,
-    pub local_memory_total_v2: u64,
-    pub max_potential_cluster_size: u32,
-    pub max_active_clusters: u32,
-    pub channel_type: ChannelType,
-}
-
-impl TryFrom<&sys::CUpti_ActivityKernel9> for KernelRecord {
-    type Error = CuptirError;
-
-    fn try_from(value: &sys::CUpti_ActivityKernel9) -> Result<Self, Self::Error> {
-        Ok(KernelRecord {
-            shared_memory_config: value.sharedMemoryConfig,
-            registers_per_thread: value.registersPerThread,
-            partitioned_global_cache_requested: PartitionedGlobalCacheConfig::try_from(
-                value.partitionedGlobalCacheRequested,
-            )?,
-            partitioned_global_cache_executed: PartitionedGlobalCacheConfig::try_from(
-                value.partitionedGlobalCacheExecuted,
-            )?,
-            start: value.start,
-            end: value.end,
-            completed: value.completed,
-            device_id: value.deviceId,
-            context_id: value.contextId,
-            stream_id: value.streamId,
-            grid_x: value.gridX,
-            grid_y: value.gridY,
-            grid_z: value.gridZ,
-            block_x: value.blockX,
-            block_y: value.blockY,
-            block_z: value.blockZ,
-            static_shared_memory: value.staticSharedMemory,
-            dynamic_shared_memory: value.dynamicSharedMemory,
-            local_memory_per_thread: value.localMemoryPerThread,
-            local_memory_total: value.localMemoryTotal,
-            correlation_id: value.correlationId,
-            grid_id: value.gridId,
-            name: unsafe { try_demangle_from_ffi(value.name) },
-            queued: if value.queued == sys::CUPTI_TIMESTAMP_UNKNOWN as u64 {
-                None
-            } else {
-                Some(value.queued)
-            },
-            submitted: if value.submitted == sys::CUPTI_TIMESTAMP_UNKNOWN as u64 {
-                None
-            } else {
-                Some(value.submitted)
-            },
-            launch_type: value.launchType,
-            is_shared_memory_carveout_requested: value.isSharedMemoryCarveoutRequested,
-            shared_memory_carveout_requested: value.sharedMemoryCarveoutRequested,
-            padding: value.padding,
-            shared_memory_executed: value.sharedMemoryExecuted,
-            graph_node_id: value.graphNodeId,
-            shmem_limit_config: value.shmemLimitConfig.try_into()?,
-            graph_id: value.graphId,
-            channel_id: value.channelID,
-            cluster_x: value.clusterX,
-            cluster_y: value.clusterY,
-            cluster_z: value.clusterZ,
-            cluster_scheduling_policy: value.clusterSchedulingPolicy,
-            local_memory_total_v2: value.localMemoryTotal_v2,
-            max_potential_cluster_size: value.maxPotentialClusterSize,
-            max_active_clusters: value.maxActiveClusters,
-            channel_type: value.channelType.try_into()?,
-        })
-    }
-}
-
-/// Memcpy activity record
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-pub struct MemcpyRecord {
-    pub copy_kind: MemcpyKind,
-    pub src_kind: MemoryKind,
-    pub dst_kind: MemoryKind,
-    pub is_async: bool,
-    pub bytes: u64,
-    pub start: Timestamp,
-    pub end: Timestamp,
-    pub device_id: DeviceId,
-    pub context_id: u32,
-    pub stream_id: StreamId,
-    pub correlation_id: u32,
-    pub runtime_correlation_id: u32,
-    pub graph_node_id: u64,
-    pub graph_id: u32,
-    pub channel_id: u32,
-    pub copy_count: u64,
-    pub channel_type: ChannelType,
-}
-
-impl TryFrom<&sys::CUpti_ActivityMemcpy6> for MemcpyRecord {
-    type Error = CuptirError;
-
-    fn try_from(value: &sys::CUpti_ActivityMemcpy6) -> Result<Self, Self::Error> {
-        Ok(Self {
-            copy_kind: MemcpyKind::try_from(value.copyKind as u32)?,
-            src_kind: MemoryKind::try_from(value.srcKind as u32)?,
-            dst_kind: MemoryKind::try_from(value.dstKind as u32)?,
-            is_async: value.flags
-                & CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_MEMCPY_ASYNC as u32 as u8
-                != 0,
-            bytes: value.bytes,
-            start: value.start,
-            end: value.end,
-            device_id: value.deviceId,
-            context_id: value.contextId,
-            stream_id: value.streamId,
-            correlation_id: value.correlationId,
-            runtime_correlation_id: value.runtimeCorrelationId,
-            graph_node_id: value.graphNodeId,
-            graph_id: value.graphId,
-            channel_id: value.channelID,
-            copy_count: value.copyCount,
-            channel_type: value.channelType.try_into()?,
-        })
-    }
-}
-
-/// Memory activity record
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-pub struct MemoryRecord {
-    pub memory_operation_type: MemoryOperationType,
-    pub memory_kind: MemoryKind,
-    pub correlation_id: u32,
-    pub address: u64,
-    pub bytes: u64,
-    pub timestamp: u64,
-    pub pc: u64,
-    pub process_id: ProcessId,
-    pub device_id: DeviceId,
-    pub context_id: ContextId,
-    pub stream_id: StreamId,
-    pub name: Option<String>,
-    pub is_async: u32,
-    // TODO: this union:
-    // pub memory_pool_config: sys::CUpti_ActivityMemory4__bindgen_ty_1,
-    pub source: Option<String>,
-}
-
-impl TryFrom<&sys::CUpti_ActivityMemory4> for MemoryRecord {
-    type Error = CuptirError;
-
-    fn try_from(value: &sys::CUpti_ActivityMemory4) -> Result<Self, Self::Error> {
-        Ok(MemoryRecord {
-            memory_operation_type: value.memoryOperationType.try_into()?,
-            memory_kind: MemoryKind::try_from(value.memoryKind)?,
-            correlation_id: value.correlationId,
-            address: value.address,
-            bytes: value.bytes,
-            timestamp: value.timestamp,
-            pc: value.PC,
-            process_id: value.processId,
-            device_id: value.deviceId,
-            context_id: value.contextId,
-            stream_id: value.streamId,
-            name: unsafe { try_demangle_from_ffi(value.name) },
-            is_async: value.isAsync,
-            source: unsafe { try_str_from_ffi(value.source) }.map(ToOwned::to_owned),
-        })
-    }
-}
-
-/// Memory pool activity record.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-pub struct MemoryPoolRecord {
-    /// The memory pool operation requested by the user.
-    pub memory_pool_operation_type: MemoryPoolOperationType,
-    /// The type of the memory pool.
-    pub memory_pool_type: MemoryPoolType,
-    /// The correlation ID of the memory pool operation.
-    pub correlation_id: u32,
-    /// The ID of the process to which this record belongs to.
-    pub process_id: ProcessId,
-    /// The ID of the device where the memory pool is created.
-    pub device_id: DeviceId,
-    /// The minimum bytes to keep of the memory pool. Only valid for trims.
-    pub min_bytes_to_keep: Option<usize>,
-    /// The virtual address of the allocation.
-    pub address: u64,
-    /// The size of the memory pool operation in bytes.
-    pub size: u64,
-    /// The release threshold of the memory pool.
-    pub release_threshold: u64,
-    /// The start timestamp for the memory operation, in ns.
-    pub timestamp: u64,
-    /// The utilized size of the memory pool.
-    pub utilized_size: u64,
-}
-
-impl TryFrom<&sys::CUpti_ActivityMemoryPool2> for MemoryPoolRecord {
-    type Error = CuptirError;
-
-    fn try_from(value: &sys::CUpti_ActivityMemoryPool2) -> Result<Self, Self::Error> {
-        let op: MemoryPoolOperationType = value.memoryPoolOperationType.try_into()?;
-        Ok(MemoryPoolRecord {
-            memory_pool_operation_type: op,
-            memory_pool_type: value.memoryPoolType.try_into()?,
-            correlation_id: value.correlationId,
-            process_id: value.processId,
-            device_id: value.deviceId,
-            min_bytes_to_keep: matches!(op, MemoryPoolOperationType::Trimmed)
-                .then_some(value.minBytesToKeep),
-            address: value.address,
-            size: value.size,
-            release_threshold: value.releaseThreshold,
-            timestamp: value.timestamp,
-            utilized_size: value.utilizedSize,
-        })
-    }
-}
-
-/// Types related Unified Virtual Memory (UVM) a.k.a. Unified Memory
-pub mod uvm {
-    use super::*;
-
-    pub type CounterScope = crate::enums::ActivityUnifiedMemoryCounterScope;
-    pub type CounterKind = crate::enums::ActivityUnifiedMemoryCounterKind;
-    pub type AccessType = crate::enums::ActivityUnifiedMemoryAccessType;
-    pub type MigrationCause = crate::enums::ActivityUnifiedMemoryMigrationCause;
-
-    /// Configuration for enabling UVM counter activity records
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    pub struct CounterConfig {
-        pub scope: uvm::CounterScope,
-        pub kind: uvm::CounterKind,
-        pub device_id: u32,
-        pub enable: bool,
-    }
-
-    impl From<CounterConfig> for sys::CUpti_ActivityUnifiedMemoryCounterConfig {
-        fn from(value: CounterConfig) -> Self {
-            sys::CUpti_ActivityUnifiedMemoryCounterConfig {
-                scope: value.scope.into(),
-                kind: value.kind.into(),
-                deviceId: value.device_id,
-                enable: if value.enable { 1 } else { 0 },
-            }
-        }
-    }
-
-    /// Data of UVM counter records representing transfers
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-    pub struct BytesTransfer {
-        pub memory_region_bytes: u64,
-        pub start: Timestamp,
-        pub end: Timestamp,
-        pub virtual_base_address: u64,
-        pub source_device_id: DeviceId,
-        pub destination_device_id: DeviceId,
-        pub stream_id: StreamId,
-        pub process_id: ProcessId,
-        pub migration_cause: MigrationCause,
-    }
-
-    impl BytesTransfer {
-        /// Construct a new BytesTransfer struct assuming the provided record holds
-        /// valid data for a bytes transfer kind of record.
-        fn try_from_record_unchecked(
-            rec: &sys::CUpti_ActivityUnifiedMemoryCounter3,
-        ) -> Result<Self, CuptirError> {
-            Ok(Self {
-                memory_region_bytes: rec.value,
-                start: rec.start,
-                end: rec.end,
-                virtual_base_address: rec.address,
-                source_device_id: rec.srcId,
-                destination_device_id: rec.dstId,
-                stream_id: rec.streamId,
-                process_id: rec.processId,
-                migration_cause: MigrationCause::try_from(rec.flags)?,
-            })
-        }
-    }
-
-    /// A UVM counter activity record
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-    pub enum CounterRecord {
-        BytesTransferHtoD(BytesTransfer),
-        BytesTransferDtoH(BytesTransfer),
-        CpuPageFaultCount,
-        GpuPageFault,
-        Thrashing,
-        Throttling,
-        RemoteMap,
-        // TODO: figure out whether [BytesTransfer] is the right choice here. Although
-        // plausible, the docs don't mention anything about how to properly interpret
-        // the fields.
-        BytesTransferDtoD(BytesTransfer),
-        Count,
-        Unknown,
-    }
-
-    impl TryFrom<&sys::CUpti_ActivityUnifiedMemoryCounter3> for CounterRecord {
-        type Error = CuptirError;
-
-        fn try_from(value: &sys::CUpti_ActivityUnifiedMemoryCounter3) -> Result<Self, Self::Error> {
-            let kind: CounterKind = value.counterKind.try_into()?;
-            Ok(match kind {
-                CounterKind::Unknown => Self::Unknown,
-                CounterKind::BytesTransferHtod => {
-                    Self::BytesTransferHtoD(BytesTransfer::try_from_record_unchecked(value)?)
-                }
-                CounterKind::BytesTransferDtoh => {
-                    Self::BytesTransferDtoH(BytesTransfer::try_from_record_unchecked(value)?)
-                }
-                CounterKind::BytesTransferDtod => {
-                    Self::BytesTransferDtoD(BytesTransfer::try_from_record_unchecked(value)?)
-                }
-                // TODO: the ones below:
-                CounterKind::CpuPageFaultCount => Self::CpuPageFaultCount,
-                CounterKind::GpuPageFault => Self::GpuPageFault,
-                CounterKind::Thrashing => Self::Thrashing,
-                CounterKind::Throttling => Self::Throttling,
-                CounterKind::RemoteMap => Self::RemoteMap,
-            })
-        }
-    }
-}
-
 /// An activity record.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub enum Record {
+    /// A record from the CUDA driver API, enabled through [`Kind::Driver`].
     DriverApi(DriverApiRecord),
+    /// A record from the CUDA runtime API, enabled through [`Kind::Runtime`].
     RuntimeApi(RuntimeApiRecord),
+    /// A record from the CUDA internal launch API, enabled through [`Kind::InternalLaunchApi`].
     InternalLaunchApi(InternalLaunchApiRecord),
-    Kernel(KernelRecord),
-    Memcpy(MemcpyRecord),
-    Memory(MemoryRecord),
-    MemoryPool(MemoryPoolRecord),
+    /// A record from a CUDA kernel, enabled through [`Kind::ConcurrentKernel`] or [`Kind::Kernel`].
+    ///
+    /// # Performance notes
+    /// It is highly recommended to utilize [`Kind::ConcurrentKernel`].
+    /// [`Kind::Kernel`] causes GPU kernel execution to be serialized.
+    Kernel(kernel::Record),
+    /// A record from a memory copy operation, enabled through [`Kind::Memcpy`].
+    Memcpy(memcpy::Record),
+    /// A record from a memory operation (allocation and release), enabled through
+    /// [`Kind::Memory2`].
+    Memory(memory::Record),
+    /// A record from a memory pool operation (creation, trimmed, destroyed), enabled through
+    /// [`Kind::MemoryPool`].
+    MemoryPool(memory_pool::Record),
+    /// A record from a unified memory operation (including page migrations), enabled through
+    /// [`Kind::UnifiedMemoryCounter`].
     UnifiedMemoryCounter(uvm::CounterRecord),
 }
 
@@ -961,7 +597,7 @@ impl Builder {
     }
 
     /// Set whether latency timestamps should be enabled, which deliver the `queued` and
-    /// `submitted` fields for [KernelRecord] event records.
+    /// `submitted` fields for [`kernel::Record`] event records.
     ///
     /// Disabled by default.
     pub fn latency_timestamps(mut self, enabled: bool) -> Self {
@@ -1176,6 +812,9 @@ pub(crate) mod test {
     where
         F: Fn(&mut Context, Arc<CudaContext>, Arc<Mutex<Vec<Record>>>) -> TestResult,
     {
+        // Flush anything that may somehow have ended up in the buffer.
+        Context::flush_all(true)?;
+
         // We can initialize the Activity API at any time, so ensure there is a CUDA
         // context attached to this thread.
         let cuda_context = cudarc::driver::CudaContext::new(0)?;
@@ -1183,7 +822,6 @@ pub(crate) mod test {
         let records: Arc<Mutex<Vec<Record>>> = Arc::new(Mutex::new(vec![]));
         let records_cb = Arc::clone(&records);
 
-        // let callback = crate::callback::Builder::new().build();
         let mut activity = builder
             .with_record_buffer_handler(move |buffer| {
                 records_cb.lock().unwrap().extend(
@@ -1370,7 +1008,7 @@ pub(crate) mod test {
     fn memory_allocate_and_copy() -> TestResult {
         const SIZE: u64 = 1337;
 
-        let recs = get_records(
+        let mut recs = get_records(
             Builder::new().with_kinds([Kind::Memcpy, Kind::Memory2]),
             |_, cuda_context, _| {
                 // Round-trip some bytes.
@@ -1392,33 +1030,43 @@ pub(crate) mod test {
             },
         )?;
 
+        // Even when running with #[serial], disabling memory pool records in previous tests, and
+        // not re-enabling in this test, somehow we can end up with those records when running this
+        // together with other tests. Filter them out.
+        recs = recs
+            .into_iter()
+            .filter(|rec| matches!(rec, Record::Memory(_) | Record::Memcpy(_)))
+            .collect::<Vec<_>>();
         assert_eq!(recs.len(), 4);
 
         if let Record::Memory(alloc) = &recs[0] {
             assert_eq!(alloc.bytes, SIZE);
-            assert_eq!(alloc.memory_kind, MemoryKind::Device);
-            assert_eq!(alloc.memory_operation_type, MemoryOperationType::Allocation);
+            assert_eq!(alloc.memory_kind, memory::Kind::Device);
+            assert_eq!(
+                alloc.memory_operation_type,
+                memory::OperationType::Allocation
+            );
         } else {
             panic!();
         }
         if let Record::Memcpy(h2d) = &recs[1] {
             assert_eq!(h2d.bytes, SIZE);
-            assert_eq!(h2d.copy_kind, MemcpyKind::Htod);
+            assert_eq!(h2d.copy_kind, memcpy::Kind::Htod);
             assert!(h2d.is_async);
         } else {
             panic!();
         }
         if let Record::Memcpy(d2h) = &recs[2] {
             assert_eq!(d2h.bytes, SIZE);
-            assert_eq!(d2h.copy_kind, MemcpyKind::Dtoh);
+            assert_eq!(d2h.copy_kind, memcpy::Kind::Dtoh);
             assert!(d2h.is_async);
         } else {
             panic!();
         }
         if let Record::Memory(free) = &recs[3] {
             assert_eq!(free.bytes, SIZE);
-            assert_eq!(free.memory_kind, MemoryKind::Device);
-            assert_eq!(free.memory_operation_type, MemoryOperationType::Release);
+            assert_eq!(free.memory_kind, memory::Kind::Device);
+            assert_eq!(free.memory_operation_type, memory::OperationType::Release);
         } else {
             panic!();
         }
@@ -1642,7 +1290,7 @@ pub(crate) mod test {
                 // Destroy the pool. This doesn't create a trim record.
                 unsafe { sys::cudaMemPoolDestroy(pool) }.result()?;
 
-                // Synchronize, this doesn't create a trim record.
+                // Synchronize, this doesn't create a trim record after destroying the pool.
                 stream.synchronize()?;
 
                 Ok(())
@@ -1659,7 +1307,7 @@ pub(crate) mod test {
                 if let Record::MemoryPool(r) = rec {
                     matches!(
                         r.memory_pool_operation_type,
-                        MemoryPoolOperationType::Created
+                        memory_pool::OperationType::Created
                     )
                     .then_some(r.address)
                 } else {
@@ -1684,30 +1332,30 @@ pub(crate) mod test {
             match r.memory_pool_operation_type {
                 crate::enums::ActivityMemoryPoolOperationType::Created => {
                     num_created += 1;
-                    assert_eq!(r.memory_pool_type, MemoryPoolType::Local);
-                    assert_eq!(r.utilized_size, 0);
-                    assert_eq!(r.release_threshold, 0);
+                    assert_eq!(r.memory_pool_type, memory_pool::PoolType::Local);
+                    assert_eq!(r.utilized_size, Some(0));
+                    assert_eq!(r.release_threshold, Some(0));
                     // We can't check the initial size, this is implementation-defined.
                 }
                 crate::enums::ActivityMemoryPoolOperationType::Trimmed => {
                     num_trimmed += 1;
                     if num_trimmed == 1 {
                         // First manual trim. We should be using the entire pool.
-                        assert_eq!(r.memory_pool_type, MemoryPoolType::Local);
-                        assert_eq!(r.release_threshold, POOL_SIZE as u64);
-                        assert_eq!(r.utilized_size, POOL_SIZE as u64);
-                        assert_eq!(r.size, POOL_SIZE as u64);
+                        assert_eq!(r.memory_pool_type, memory_pool::PoolType::Local);
+                        assert_eq!(r.release_threshold, Some(POOL_SIZE as u64));
+                        assert_eq!(r.utilized_size, Some(POOL_SIZE as u64));
+                        assert_eq!(r.size, Some(POOL_SIZE as u64));
                     } else if num_trimmed == 2 {
                         // Trim due to synchronize, we should see half the pool being used.
-                        assert_eq!(r.memory_pool_type, MemoryPoolType::Local);
-                        assert_eq!(r.release_threshold, POOL_SIZE as u64);
-                        assert_eq!(r.utilized_size, (POOL_SIZE / 2) as u64);
-                        assert_eq!(r.size, POOL_SIZE as u64);
+                        assert_eq!(r.memory_pool_type, memory_pool::PoolType::Local);
+                        assert_eq!(r.release_threshold, Some(POOL_SIZE as u64));
+                        assert_eq!(r.utilized_size, Some((POOL_SIZE / 2) as u64));
+                        assert_eq!(r.size, Some(POOL_SIZE as u64));
                     } else if num_trimmed == 3 {
                         // Manual trim, we should see half the pool being used, and it having
                         // trimmed down to exactly its usage.
-                        assert_eq!(r.memory_pool_type, MemoryPoolType::Local);
-                        assert_eq!(r.release_threshold, POOL_SIZE as u64);
+                        assert_eq!(r.memory_pool_type, memory_pool::PoolType::Local);
+                        assert_eq!(r.release_threshold, Some(POOL_SIZE as u64));
                         assert_eq!(r.utilized_size, r.size);
                     } else {
                         panic!("unexpected fourth trim record")
