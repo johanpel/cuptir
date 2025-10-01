@@ -204,7 +204,8 @@ impl RuntimeApiCallbackData {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct StateData {
-    pub result: Result<(), CuptiError>,
+    #[serde(skip)]
+    pub result: Option<CuptiError>,
     pub message: Option<String>,
 }
 
@@ -217,7 +218,7 @@ impl TryFrom<&sys::CUpti_StateData> for StateData {
         // go wrong.
         let data = unsafe { value.__bindgen_anon_1.notification };
         Ok(Self {
-            result: data.result.result(),
+            result: data.result.result().err(),
             message: unsafe { try_str_from_ffi(data.message) }.map(ToOwned::to_owned),
         })
     }
@@ -227,7 +228,9 @@ impl TryFrom<&sys::CUpti_StateData> for StateData {
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct ResourceData {
     pub id: CallbackIdResource,
+    #[serde(skip)]
     pub context: driver_sys::CUcontext,
+    #[serde(skip)]
     pub stream: Option<driver_sys::CUstream>,
 }
 
@@ -254,7 +257,9 @@ impl ResourceData {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct SynchronizationData {
+    #[serde(skip)]
     pub context: driver_sys::CUcontext,
+    #[serde(skip)]
     pub stream: driver_sys::CUstream,
 }
 
