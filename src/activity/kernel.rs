@@ -1,4 +1,6 @@
 use cudarc::cupti::sys;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 pub use crate::enums::ChannelType;
 pub use crate::enums::FuncShmemLimitConfig;

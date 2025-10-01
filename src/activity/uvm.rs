@@ -1,6 +1,8 @@
 //! Types related Unified Virtual Memory (UVM) a.k.a. Unified Memory
 
 use cudarc::cupti::sys;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::error::CuptirError;
 

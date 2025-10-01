@@ -1,6 +1,8 @@
 //! Memory pool activity record support
 
 use cudarc::cupti::sys;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::error::CuptirError;
 
