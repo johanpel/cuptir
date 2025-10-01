@@ -398,6 +398,7 @@ pub(crate) struct Context {
     enabled_runtime_functions: Vec<runtime::Function>,
 
     unified_memory_counter_configs: Vec<sys::CUpti_ActivityUnifiedMemoryCounterConfig>,
+    latency_timestamps: bool,
 }
 
 impl Context {
@@ -426,6 +427,19 @@ impl Context {
             Ok(())
         } else {
             Err(CuptirError::Activity("enabling activity records for unified memory counters requires enabling the activity kind and supplying counter configurations".into()))
+        }
+    }
+
+    pub(crate) fn enable_hardware_tracing(&mut self) -> Result<(), CuptirError> {
+        if !self.latency_timestamps {
+            trace!("enabling hardware tracing for activity records");
+            result::activity::enable_hw_trace(1u8)?;
+            Ok(())
+        } else {
+            // See: https://docs.nvidia.com/cupti/main/main.html#hardware-event-system-hes
+            Err(CuptirError::Activity(
+                "hardware tracing and latency timestamps are incompatible".into(),
+            ))
         }
     }
 }
@@ -529,7 +543,6 @@ pub struct Builder {
     latency_timestamps: bool,
     allocation_source: bool,
     disable_all_sync_records: bool,
-    hardware_tracing: bool,
 
     unified_memory_counter_configs: HashSet<uvm::CounterConfig>,
 
@@ -661,15 +674,6 @@ impl Builder {
         self
     }
 
-    /// Set whether to enabled hardware tracing.
-    ///
-    /// This may reduce overhead when tracing kernels.
-    /// This is only available for Blackwell and beyond.
-    pub fn hardware_tracing(mut self, enabled: bool) -> Self {
-        self.hardware_tracing = enabled;
-        self
-    }
-
     fn toggle_activity<T, F>(
         which: &str,
         items: &[T],
@@ -744,17 +748,6 @@ impl Builder {
                             &mut value as *mut _ as *mut std::ffi::c_void,
                         )
                     }?;
-                }
-
-                // See: https://docs.nvidia.com/cupti/main/main.html#hardware-event-system-hes
-                if self.hardware_tracing && self.latency_timestamps {
-                    return Err(CuptirError::Builder(
-                        "hardware tracing and latency timestamps are incompatible.".into(),
-                    ));
-                }
-
-                if self.hardware_tracing {
-                    result::activity::enable_hw_trace(1u8)?;
                 }
 
                 set_record_buffer_handler(Some(record_buffer_handler))?;
@@ -861,6 +854,7 @@ impl Builder {
                     .into_iter()
                     .map(Into::into)
                     .collect(),
+                latency_timestamps: self.latency_timestamps,
             }))
         } else if self.record_buffer_handler.is_some() {
             Err(CuptirError::Builder("An activity record buffer handler is installed but no activity kind or driver/runtime API functions activity is enabled".into()))
