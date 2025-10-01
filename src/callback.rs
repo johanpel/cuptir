@@ -1,14 +1,18 @@
 //! Safe wrappers around the CUPTI Callback API.
 use std::{collections::HashSet, sync::RwLock};
 
-use cudarc::{cupti::result, cupti::sys};
+use cudarc::cupti::{
+    result::{self, CuptiError},
+    sys,
+};
+use cudarc::driver::sys as driver_sys;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
 
 use crate::{
     driver,
-    enums::CallbackDomain,
+    enums::{CallbackDomain, CallbackIdResource},
     error::CuptirError,
     runtime,
     utils::{try_demangle_from_ffi, try_str_from_ffi},
@@ -197,16 +201,105 @@ impl RuntimeApiCallbackData {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+pub struct StateData {
+    pub result: Result<(), CuptiError>,
+    pub message: Option<String>,
+}
+
+impl TryFrom<&sys::CUpti_StateData> for StateData {
+    type Error = CuptirError;
+
+    fn try_from(value: &sys::CUpti_StateData) -> Result<Self, Self::Error> {
+        // Safety:
+        // For some reason this is a union, but it only has one field, so theoretically nothing can
+        // go wrong.
+        let data = unsafe { value.__bindgen_anon_1.notification };
+        Ok(Self {
+            result: data.result.result(),
+            message: unsafe { try_str_from_ffi(data.message) }.map(ToOwned::to_owned),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+pub struct ResourceData {
+    pub id: CallbackIdResource,
+    pub context: driver_sys::CUcontext,
+    pub stream: Option<driver_sys::CUstream>,
+}
+
+impl ResourceData {
+    fn try_new(
+        resource_callback_id: u32,
+        data: &sys::CUpti_ResourceData,
+    ) -> Result<Self, CuptirError> {
+        let id = resource_callback_id.try_into()?;
+        Ok(Self {
+            id,
+            context: data.context,
+            // TODO: figure out whether CallbackIdResource::StreamAttributeChanged also has a valid
+            // stream argument. The docs do not mention it explicitly.
+            stream: matches!(
+                id,
+                CallbackIdResource::StreamCreated | CallbackIdResource::StreamDestroyStarting
+            )
+            .then_some(data.resourceHandle.bindgen_union_field as driver_sys::CUstream),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+pub struct SynchronizationData {
+    pub context: driver_sys::CUcontext,
+    pub stream: driver_sys::CUstream,
+}
+
+impl TryFrom<&sys::CUpti_SynchronizeData> for SynchronizationData {
+    type Error = CuptirError;
+
+    fn try_from(value: &sys::CUpti_SynchronizeData) -> Result<Self, Self::Error> {
+        Ok(Self {
+            context: value.context,
+            stream: value.stream,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+pub struct NvtxData {
+    pub function: crate::enums::NvtxApiTraceCbid,
+    // TODO: support the rest, but this requires NVTX meta headers which have surprisingly been left
+    // commented out in CUPTI headers.
+    // pub functionParams: *const ::core::ffi::c_void,
+    // pub functionReturnValue: *const ::core::ffi::c_void,
+}
+
+impl NvtxData {
+    fn try_new(cbid: u32, _value: &sys::CUpti_NvtxData) -> Result<Self, CuptirError> {
+        Ok(Self {
+            function: cbid.try_into()?,
+        })
+    }
+
+    pub fn function_name(&self) -> Result<String, CuptirError> {
+        callback_name(Domain::Nvtx, self.function as u32)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub enum Data {
     DriverApi(DriverApiCallbackData),
     RuntimeApi(RuntimeApiCallbackData),
-    // TODO: the other domains
-    Resource,
-    Synchronize,
-    Nvtx,
-    State,
+    Resource(ResourceData),
+    Synchronize(SynchronizationData),
+    Nvtx(NvtxData),
+    State(StateData),
 }
 
 pub(crate) unsafe extern "C" fn handler(
@@ -223,19 +316,29 @@ pub(crate) unsafe extern "C" fn handler(
     if let Ok(domain) = Domain::try_from(domain) {
         let maybe_callback = match domain {
             Domain::DriverApi => {
-                let data: &sys::CUpti_CallbackData =
-                    unsafe { &*(cbdata as *const sys::CUpti_CallbackData) };
+                let data = unsafe { &*(cbdata as *const sys::CUpti_CallbackData) };
                 DriverApiCallbackData::try_new(cbid, data).map(Data::DriverApi)
             }
             Domain::RuntimeApi => {
-                let data: &sys::CUpti_CallbackData =
-                    unsafe { &*(cbdata as *const sys::CUpti_CallbackData) };
+                let data = unsafe { &*(cbdata as *const sys::CUpti_CallbackData) };
                 RuntimeApiCallbackData::try_new(cbid, data).map(Data::RuntimeApi)
             }
-            Domain::Resource => Ok(Data::Resource),
-            Domain::Synchronize => Ok(Data::Synchronize),
-            Domain::Nvtx => Ok(Data::Nvtx),
-            Domain::State => Ok(Data::State),
+            Domain::Resource => {
+                let data = unsafe { &*(cbdata as *const sys::CUpti_ResourceData) };
+                ResourceData::try_new(cbid, data).map(Data::Resource)
+            }
+            Domain::Synchronize => {
+                let data = unsafe { &*(cbdata as *const sys::CUpti_SynchronizeData) };
+                data.try_into().map(Data::Synchronize)
+            }
+            Domain::Nvtx => {
+                let data = unsafe { &*(cbdata as *const sys::CUpti_NvtxData) };
+                NvtxData::try_new(cbid, data).map(Data::Nvtx)
+            }
+            Domain::State => {
+                let data = unsafe { &*(cbdata as *const sys::CUpti_StateData) };
+                data.try_into().map(Data::State)
+            }
         };
 
         match maybe_callback {
