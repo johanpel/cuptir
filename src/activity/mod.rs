@@ -1,6 +1,6 @@
 //! Safe wrappers around the CUPTI Activity API
 use std::{
-    alloc::{Layout, alloc, dealloc},
+    alloc::{Layout, alloc_zeroed, dealloc},
     collections::HashSet,
     num::NonZero,
     sync::RwLock,
@@ -17,7 +17,7 @@ use tracing::{trace, warn};
 use crate::{
     callback::callback_name,
     driver,
-    enums::{DriverFunc, RuntimeFunc},
+    enums::{ActivityAttribute, DriverFunc, RuntimeFunc},
     error::CuptirError,
     runtime,
 };
@@ -346,13 +346,14 @@ pub(crate) extern "C" fn buffer_requested_callback(
     size: *mut usize,
     max_num_records: *mut usize,
 ) {
+    // TODO: consider providing buffers from a pool
     trace!("buffer requested");
     let layout = Layout::from_size_align(CUPTI_BUFFER_SIZE, CUPTI_BUFFER_ALIGN).unwrap();
     unsafe {
-        // Safety: ownership of the memory allocated here is transferred to the
-        // RecordBuffer constructed in [buffer_complete_callback], and freed when the
+        // Safety: after usage by CUPTI, ownership of the memory allocated here is transferred back
+        // to the RecordBuffer constructed in [buffer_complete_callback], and freed when the
         // RecordBuffer is dropped.
-        let ptr = alloc(layout);
+        let ptr = alloc_zeroed(layout);
         *buffer = ptr;
         *size = CUPTI_BUFFER_SIZE;
         *max_num_records = 0; // means: fill this with as many records as possible
@@ -397,6 +398,7 @@ pub(crate) struct Context {
     enabled_runtime_functions: Vec<runtime::Function>,
 
     unified_memory_counter_configs: Vec<sys::CUpti_ActivityUnifiedMemoryCounterConfig>,
+    latency_timestamps: bool,
 }
 
 impl Context {
@@ -425,6 +427,19 @@ impl Context {
             Ok(())
         } else {
             Err(CuptirError::Activity("enabling activity records for unified memory counters requires enabling the activity kind and supplying counter configurations".into()))
+        }
+    }
+
+    pub(crate) fn enable_hardware_tracing(&mut self) -> Result<(), CuptirError> {
+        if !self.latency_timestamps {
+            trace!("enabling hardware tracing for activity records");
+            result::activity::enable_hw_trace(1u8)?;
+            Ok(())
+        } else {
+            // See: https://docs.nvidia.com/cupti/main/main.html#hardware-event-system-hes
+            Err(CuptirError::Activity(
+                "hardware tracing and latency timestamps are incompatible".into(),
+            ))
         }
     }
 }
@@ -530,6 +545,9 @@ pub struct Builder {
     disable_all_sync_records: bool,
 
     unified_memory_counter_configs: HashSet<uvm::CounterConfig>,
+
+    device_buffer_size: Option<usize>,
+    device_buffer_pool_limit: Option<usize>,
 
     flush_period: Option<NonZero<u32>>,
 }
@@ -640,6 +658,22 @@ impl Builder {
         self
     }
 
+    /// Set the device buffer size for activity records.
+    ///
+    /// See [CUPTI docs](https://docs.nvidia.com/cupti/api/group__CUPTI__ACTIVITY__API.html?highlight=CUPTI_ACTIVITY_ATTR_DEVICE_BUFFER_POOL_LIMIT#_CPPv4N23CUpti_ActivityAttribute38CUPTI_ACTIVITY_ATTR_DEVICE_BUFFER_SIZEE).
+    pub fn device_buffer_size(mut self, size: Option<usize>) -> Self {
+        self.device_buffer_size = size;
+        self
+    }
+
+    /// Set the device buffer pool limit.
+    ///
+    /// See [CUPTI docs](https://docs.nvidia.com/cupti/api/group__CUPTI__ACTIVITY__API.html?highlight=CUPTI_ACTIVITY_ATTR_DEVICE_BUFFER_POOL_LIMIT#_CPPv4N23CUpti_ActivityAttribute44CUPTI_ACTIVITY_ATTR_DEVICE_BUFFER_POOL_LIMITE).
+    pub fn device_buffer_pool_limit(mut self, limit: Option<usize>) -> Self {
+        self.device_buffer_pool_limit = limit;
+        self
+    }
+
     fn toggle_activity<T, F>(
         which: &str,
         items: &[T],
@@ -674,6 +708,48 @@ impl Builder {
         if anything_enabled {
             if let Some(record_buffer_handler) = self.record_buffer_handler {
                 trace!("registering activity buffer callbacks");
+
+                // We're going to provide zero-initialized buffers. Tell CUPTI so it doesn't have to
+                // zero out buffers in its main thread (this is a perf consideration described in
+                // CUPTI docs).
+                unsafe {
+                    result::activity::set_attribute(
+                        ActivityAttribute::ZeroedOutActivityBuffer.into(),
+                        &mut size_of::<u8>(),
+                        &mut 1u8 as *mut _ as *mut std::ffi::c_void,
+                    )
+                }?;
+
+                // Use a per-thread activity buffer. This is the default in CUDA 13 and onwards,
+                // but not yet for CUDA 12, so ensure this is on.
+                unsafe {
+                    result::activity::set_attribute(
+                        ActivityAttribute::PerThreadActivityBuffer.into(),
+                        &mut size_of::<u8>(),
+                        &mut 1u8 as *mut _ as *mut std::ffi::c_void,
+                    )
+                }?;
+
+                if let Some(mut value) = self.device_buffer_size {
+                    unsafe {
+                        result::activity::set_attribute(
+                            ActivityAttribute::PerThreadActivityBuffer.into(),
+                            &mut size_of::<usize>(),
+                            &mut value as *mut _ as *mut std::ffi::c_void,
+                        )
+                    }?;
+                }
+
+                if let Some(mut value) = self.device_buffer_pool_limit {
+                    unsafe {
+                        result::activity::set_attribute(
+                            ActivityAttribute::PerThreadActivityBuffer.into(),
+                            &mut size_of::<usize>(),
+                            &mut value as *mut _ as *mut std::ffi::c_void,
+                        )
+                    }?;
+                }
+
                 set_record_buffer_handler(Some(record_buffer_handler))?;
                 result::activity::register_callbacks(
                     Some(buffer_requested_callback),
@@ -778,6 +854,7 @@ impl Builder {
                     .into_iter()
                     .map(Into::into)
                     .collect(),
+                latency_timestamps: self.latency_timestamps,
             }))
         } else if self.record_buffer_handler.is_some() {
             Err(CuptirError::Builder("An activity record buffer handler is installed but no activity kind or driver/runtime API functions activity is enabled".into()))

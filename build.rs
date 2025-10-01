@@ -131,7 +131,7 @@ fn generate_safe_enums(source: &syn::File, version: &str) -> TokenStream {
             }
 
             let src_enum_name = src_enum.ident.to_string();
-            if src_enum_name.starts_with("CUpti_") 
+            if src_enum_name.starts_with("CUpti_")
                 && let Some((_, rest)) = src_enum_name.split_once("CUpti_") {
                 let src_enum_variants = src_enum
                     .variants
@@ -181,7 +181,7 @@ fn generate_safe_enums(source: &syn::File, version: &str) -> TokenStream {
                     if !(tgt_variant_name.eq("INVALID")
                         || tgt_variant_name.eq("SIZE")
                         || tgt_variant_name.eq("COUNT")
-                        || tgt_variant_name.eq("FORCE_INT"))
+                        || tgt_variant_name.contains("FORCE_INT"))
                     {
                         let src_variant_ident = format_ident!("{}", src_variant);
                         // Special case for the callback names, we want to

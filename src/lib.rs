@@ -58,13 +58,32 @@ impl Context {
     /// performed when using [`ContextBuilder::build`].
     ///
     /// This requires the activity context to be initialized, see
-    /// [ContextBuilder::with_activity].
+    /// [`ContextBuilder::build`].
     pub fn activity_enable_unified_memory_counters(&mut self) -> Result<(), CuptirError> {
         if let Some(activity) = &mut self.activity {
             activity.enable_unified_memory_counters()
         } else {
             Err(CuptirError::Activity(
                 "enabling unified memory counters requires initializing with an activity api context"
+                    .into(),
+            ))
+        }
+    }
+
+    /// Enable hardware tracing for the activity API.
+    ///
+    /// This can only be performed after CUDA driver initialization, hence it is not
+    /// performed when using [`ContextBuilder::build`].
+    ///
+    /// This may reduce overhead when tracing kernels. This is only available for Blackwell and
+    /// beyond. This cannot be used when latency timestamps are enabled. Also see:
+    /// [`activity::Builder::latency_timestamps`].
+    pub fn activity_enable_hardware_tracing(&mut self) -> Result<(), CuptirError> {
+        if let Some(activity) = &mut self.activity {
+            activity.enable_hardware_tracing()
+        } else {
+            Err(CuptirError::Activity(
+                "enabling hardware tracing requires initializing with an activity api context"
                     .into(),
             ))
         }
