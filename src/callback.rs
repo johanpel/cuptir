@@ -204,7 +204,7 @@ impl RuntimeApiCallbackData {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct StateData {
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub result: Option<CuptiError>,
     pub message: Option<String>,
 }
@@ -228,9 +228,9 @@ impl TryFrom<&sys::CUpti_StateData> for StateData {
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct ResourceData {
     pub id: CallbackIdResource,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub context: driver_sys::CUcontext,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub stream: Option<driver_sys::CUstream>,
 }
 
@@ -257,9 +257,9 @@ impl ResourceData {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct SynchronizationData {
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub context: driver_sys::CUcontext,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub stream: driver_sys::CUstream,
 }
 
