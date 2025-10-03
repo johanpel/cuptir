@@ -10,6 +10,7 @@ pub mod activity;
 pub mod callback;
 pub mod driver;
 pub mod error;
+pub mod profiling_host;
 pub mod runtime;
 mod utils;
 

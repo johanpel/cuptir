@@ -896,10 +896,6 @@ pub(crate) mod test {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    // tracing_subscriber::fmt()
-    // .with_max_level(tracing::level_filters::LevelFilter::TRACE)
-    // .init();
-
     pub(crate) fn get_records<F>(
         builder: Builder,
         func: F,
