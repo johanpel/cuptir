@@ -63,16 +63,16 @@ impl TryFrom<&sys::CUpti_ActivityPcie> for Record {
             DeviceType::Gpu => Self::Gpu({
                 let gpu_attr = unsafe { value.attr.gpuAttr.as_ref() };
                 GpuRecord {
-                    device_id: unsafe { value.id.devId.as_ref() }.clone() as driver::sys::CUdevice,
+                    device_id: *unsafe { value.id.devId.as_ref() } as driver::sys::CUdevice,
                     node_props: value.into(),
                     device_uuid: uuid_from_i8_slice(&gpu_attr.uuidDev.bytes),
-                    peer_devices: gpu_attr.peerDev.clone(),
+                    peer_devices: gpu_attr.peerDev,
                 }
             }),
             DeviceType::Bridge => Self::Bridge({
                 let bridge_attr = unsafe { value.attr.bridgeAttr.as_ref() };
                 BridgeRecord {
-                    bridge_id: unsafe { value.id.bridgeId.as_ref() }.clone(),
+                    bridge_id: *unsafe { value.id.bridgeId.as_ref() },
                     node_props: value.into(),
                     secondary_bus: bridge_attr.secondaryBus,
                     device_id: bridge_attr.deviceId,
