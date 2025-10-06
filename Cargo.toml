@@ -19,7 +19,7 @@ version.workspace = true
 
 [features]
 default = []
-serde = ["dep:serde"]
+serde = ["dep:serde", "uuid/serde"]
 # only support these for now :tm:
 cuda-12080 = ["cudarc/cuda-12080"]
 cuda-12090 = ["cudarc/cuda-12090"]
@@ -32,6 +32,7 @@ serde = { version = "1.0.129", features = ["derive"], optional = true }
 thiserror = "2.0.12"
 cudarc = { workspace = true, features = ["dynamic-linking", "cupti", "std"] }
 tracing.workspace = true
+uuid = { version = "1.18.1", optional-features = [ "serde" ] }
 
 [dev-dependencies]
 serial_test = "3.2.0"

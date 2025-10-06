@@ -1,9 +1,11 @@
 use cudarc::cupti::sys;
-use cudarc::driver::sys as driver;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::CuptirError;
+use crate::{
+    CuptirError,
+    utils::{try_str_from_ffi, uuid_from_i8_slice},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
@@ -35,13 +37,13 @@ pub struct Record {
     pub compute_capability_minor: u32,
     pub id: u32,
     pub ecc_enabled: u32,
-    pub uuid: driver::CUuuid,
-    pub name: *const ::core::ffi::c_char,
+    pub uuid: uuid::Uuid,
+    pub name: String,
     pub is_cuda_visible: u8,
     pub is_mig_enabled: u8,
     pub gpu_instance_id: u32,
     pub compute_instance_id: u32,
-    pub mig_uuid: driver::CUuuid,
+    pub mig_uuid: uuid::Uuid,
     pub is_numa_node: u32,
     pub numa_id: u32,
 }
@@ -80,13 +82,15 @@ impl TryFrom<&sys::CUpti_ActivityDevice5> for Record {
             compute_capability_minor: value.computeCapabilityMinor,
             id: value.id,
             ecc_enabled: value.eccEnabled,
-            uuid: value.uuid,
-            name: value.name,
+            uuid: uuid_from_i8_slice(&value.uuid.bytes),
+            name: unsafe { try_str_from_ffi(value.name) }
+                .unwrap_or("<null or non-utf8>")
+                .to_owned(),
             is_cuda_visible: value.isCudaVisible,
             is_mig_enabled: value.isMigEnabled,
             gpu_instance_id: value.gpuInstanceId,
             compute_instance_id: value.computeInstanceId,
-            mig_uuid: value.migUuid,
+            mig_uuid: uuid_from_i8_slice(&value.migUuid.bytes),
             is_numa_node: value.isNumaNode,
             numa_id: value.numaId,
         })

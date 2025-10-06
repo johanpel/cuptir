@@ -17,7 +17,7 @@ use tracing::{trace, warn};
 use crate::{
     callback::callback_name,
     driver,
-    enums::{ActivityAttribute, DriverFunc, PcieDeviceType, RuntimeFunc},
+    enums::{ActivityAttribute, DriverFunc, RuntimeFunc},
     error::CuptirError,
     runtime,
 };
