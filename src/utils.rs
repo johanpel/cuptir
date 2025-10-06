@@ -36,5 +36,5 @@ pub(crate) unsafe fn try_demangle_from_ffi(c_str: *const std::ffi::c_char) -> Op
 pub(crate) fn uuid_from_i8_slice(bytes: [i8; 16]) -> uuid::Uuid {
     let u8_bytes = bytes.map(|x| x as u8);
     // Safety: unwrap because this is not a variable length slice
-    uuid::Uuid::from_slice(u8_bytes).unwrap()
+    uuid::Uuid::from_bytes(u8_bytes)
 }
