@@ -6,7 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _context = cuptir::Context::builder()
         .with_activity(
             activity::Builder::new()
-                .with_kinds([activity::Kind::ConcurrentKernel])
+                .with_kinds([activity::Kind::Pcie, activity::Kind::Device])
                 .with_record_buffer_handler(|buffer| {
                     buffer
                         .into_iter()
