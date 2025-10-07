@@ -65,7 +65,7 @@ impl TryFrom<&sys::CUpti_ActivityPcie> for Record {
                 GpuRecord {
                     device_id: *unsafe { value.id.devId.as_ref() } as driver::sys::CUdevice,
                     node_props: value.into(),
-                    device_uuid: uuid_from_i8_slice(&gpu_attr.uuidDev.bytes),
+                    device_uuid: uuid_from_i8_slice(gpu_attr.uuidDev.bytes),
                     peer_devices: gpu_attr.peerDev,
                 }
             }),

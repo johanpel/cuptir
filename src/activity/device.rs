@@ -82,7 +82,7 @@ impl TryFrom<&sys::CUpti_ActivityDevice5> for Record {
             compute_capability_minor: value.computeCapabilityMinor,
             id: value.id,
             ecc_enabled: value.eccEnabled,
-            uuid: uuid_from_i8_slice(&value.uuid.bytes),
+            uuid: uuid_from_i8_slice(value.uuid.bytes),
             name: unsafe { try_str_from_ffi(value.name) }
                 .unwrap_or("<null or non-utf8>")
                 .to_owned(),
@@ -90,7 +90,7 @@ impl TryFrom<&sys::CUpti_ActivityDevice5> for Record {
             is_mig_enabled: value.isMigEnabled,
             gpu_instance_id: value.gpuInstanceId,
             compute_instance_id: value.computeInstanceId,
-            mig_uuid: uuid_from_i8_slice(&value.migUuid.bytes),
+            mig_uuid: uuid_from_i8_slice(value.migUuid.bytes),
             is_numa_node: value.isNumaNode,
             numa_id: value.numaId,
         })
