@@ -22,10 +22,12 @@ use crate::{
     runtime,
 };
 
+pub mod device;
 pub mod kernel;
 pub mod memcpy;
 pub mod memory;
 pub mod memory_pool;
+pub mod pcie;
 pub mod uvm;
 
 pub use crate::enums::ChannelType;
@@ -250,6 +252,8 @@ pub struct InternalLaunchApiRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub enum Record {
+    /// A record from a device, enabled through [`Kind::Device`].
+    Device(device::Record),
     /// A record from the CUDA driver API, enabled through [`Kind::Driver`].
     DriverApi(DriverApiRecord),
     /// A record from the CUDA runtime API, enabled through [`Kind::Runtime`].
@@ -273,6 +277,8 @@ pub enum Record {
     /// A record from a unified memory operation (including page migrations), enabled through
     /// [`Kind::UnifiedMemoryCounter`].
     UnifiedMemoryCounter(uvm::CounterRecord),
+    /// A PCIE record
+    Pcie(pcie::Record),
 }
 
 impl Record {
@@ -287,6 +293,10 @@ impl Record {
         // dereferences should be safe.
         let kind = unsafe { *record_ptr }.kind;
         match kind {
+            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE => {
+                let device_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityDevice5) };
+                Ok(Record::Device(device_record.try_into()?))
+            }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DRIVER => {
                 let api_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityAPI) };
                 Ok(Record::DriverApi(DriverApiRecord {
@@ -330,6 +340,10 @@ impl Record {
                 Ok(Record::UnifiedMemoryCounter(
                     unified_memory_counter_record.try_into()?,
                 ))
+            }
+            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PCIE => {
+                let pcie_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityPcie) };
+                Ok(Record::Pcie(pcie_record.try_into()?))
             }
             _ => {
                 trace!("unimplemented activity kind: {kind:?}");
@@ -513,7 +527,7 @@ impl Drop for Context {
         }
 
         if let Err(error) = Self::flush_all(true) {
-            warn!("unable to flush activity buffer: {error}")
+            warn!("unable to flush activity buffer: {error}");
         }
 
         // Unset the record buffer handler function. We would ideally tell CUPTI to stop
@@ -522,7 +536,11 @@ impl Drop for Context {
         // so we will handle more records coming in somehow in [handle_record_buffer].
         trace!("resetting activity record buffer handler");
         if let Err(e) = set_record_buffer_handler(None) {
-            warn!("unable to reset activity record buffer handler: {e}")
+            warn!("unable to reset activity record buffer handler: {e}");
+        }
+
+        if let Err(e) = result::finalize() {
+            warn!("unable to finalize cupti {e}");
         }
     }
 }
