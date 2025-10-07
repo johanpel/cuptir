@@ -1,4 +1,5 @@
 //! Safe wrappers around the CUPTI Activity API
+
 use std::{
     alloc::{Layout, alloc_zeroed, dealloc},
     collections::HashSet,
@@ -23,6 +24,7 @@ use crate::{
 };
 
 pub mod device;
+pub mod environment;
 pub mod kernel;
 pub mod memcpy;
 pub mod memory;
@@ -256,8 +258,9 @@ pub enum Record {
     Device(device::Record),
     /// A record from the CUDA driver API, enabled through [`Kind::Driver`].
     DriverApi(DriverApiRecord),
-    /// A record from the CUDA runtime API, enabled through [`Kind::Runtime`].
-    RuntimeApi(RuntimeApiRecord),
+    /// A record from the environment (frequencies, power, temperature, cooling, etc.) enabled
+    /// through [`Kind::Environment`].
+    Environment(environment::Record),
     /// A record from the CUDA internal launch API, enabled through [`Kind::InternalLaunchApi`].
     InternalLaunchApi(InternalLaunchApiRecord),
     /// A record from a CUDA kernel, enabled through [`Kind::ConcurrentKernel`] or [`Kind::Kernel`].
@@ -274,11 +277,13 @@ pub enum Record {
     /// A record from a memory pool operation (creation, trimmed, destroyed), enabled through
     /// [`Kind::MemoryPool`].
     MemoryPool(memory_pool::Record),
+    /// A PCIE record
+    Pcie(pcie::Record),
+    /// A record from the CUDA runtime API, enabled through [`Kind::Runtime`].
+    RuntimeApi(RuntimeApiRecord),
     /// A record from a unified memory operation (including page migrations), enabled through
     /// [`Kind::UnifiedMemoryCounter`].
     UnifiedMemoryCounter(uvm::CounterRecord),
-    /// A PCIE record
-    Pcie(pcie::Record),
 }
 
 impl Record {
@@ -293,6 +298,10 @@ impl Record {
         // dereferences should be safe.
         let kind = unsafe { *record_ptr }.kind;
         match kind {
+            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL => {
+                let value = unsafe { &*(record_ptr as *const sys::CUpti_ActivityKernel9) };
+                Ok(Record::Kernel(value.try_into()?))
+            }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_DEVICE => {
                 let device_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityDevice5) };
                 Ok(Record::Device(device_record.try_into()?))
@@ -304,22 +313,16 @@ impl Record {
                     props: api_record.into(),
                 }))
             }
-            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_RUNTIME => {
-                let api_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityAPI) };
-                Ok(Record::RuntimeApi(RuntimeApiRecord {
-                    function: RuntimeFunc::try_from(api_record.cbid)?,
-                    props: api_record.into(),
-                }))
+            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_ENVIRONMENT => {
+                let environment_record =
+                    unsafe { &*(record_ptr as *const sys::CUpti_ActivityEnvironment) };
+                Ok(Record::Environment(environment_record.try_into()?))
             }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_INTERNAL_LAUNCH_API => {
                 let api_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityAPI) };
                 Ok(Record::InternalLaunchApi(InternalLaunchApiRecord {
                     props: api_record.into(),
                 }))
-            }
-            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL => {
-                let value = unsafe { &*(record_ptr as *const sys::CUpti_ActivityKernel9) };
-                Ok(Record::Kernel(value.try_into()?))
             }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY => {
                 let memcpy_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityMemcpy6) };
@@ -334,16 +337,23 @@ impl Record {
                     unsafe { &*(record_ptr as *const sys::CUpti_ActivityMemoryPool2) };
                 Ok(Record::MemoryPool(memory_pool_record.try_into()?))
             }
+            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PCIE => {
+                let pcie_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityPcie) };
+                Ok(Record::Pcie(pcie_record.try_into()?))
+            }
+            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_RUNTIME => {
+                let api_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityAPI) };
+                Ok(Record::RuntimeApi(RuntimeApiRecord {
+                    function: RuntimeFunc::try_from(api_record.cbid)?,
+                    props: api_record.into(),
+                }))
+            }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER => {
                 let unified_memory_counter_record =
                     unsafe { &*(record_ptr as *const sys::CUpti_ActivityUnifiedMemoryCounter3) };
                 Ok(Record::UnifiedMemoryCounter(
                     unified_memory_counter_record.try_into()?,
                 ))
-            }
-            sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_PCIE => {
-                let pcie_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityPcie) };
-                Ok(Record::Pcie(pcie_record.try_into()?))
             }
             _ => {
                 trace!("unimplemented activity kind: {kind:?}");
@@ -537,10 +547,6 @@ impl Drop for Context {
         trace!("resetting activity record buffer handler");
         if let Err(e) = set_record_buffer_handler(None) {
             warn!("unable to reset activity record buffer handler: {e}");
-        }
-
-        if let Err(e) = result::finalize() {
-            warn!("unable to finalize cupti {e}");
         }
     }
 }
@@ -895,10 +901,6 @@ pub(crate) mod test {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    // tracing_subscriber::fmt()
-    // .with_max_level(tracing::level_filters::LevelFilter::TRACE)
-    // .init();
 
     pub(crate) fn get_records<F>(
         builder: Builder,

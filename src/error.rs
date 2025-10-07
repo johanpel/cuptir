@@ -1,5 +1,7 @@
 //! Error types used by this crate.
 
+use std::ffi::IntoStringError;
+
 use thiserror::Error;
 
 /// Cuptir error kinds
@@ -41,4 +43,7 @@ pub enum CuptirError {
     /// may not be possible when CUPTI doesn't have definitions for that function.
     #[error("not supported by CUPTI")]
     CuptiNotSupported,
+    /// An error when attempting to convert from a C string to a [`String`].
+    #[error("unable to convert to string")]
+    IntoStringError(#[from] IntoStringError),
 }

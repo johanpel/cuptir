@@ -1,4 +1,5 @@
 //! Safe wrappers around the CUPTI Callback API.
+
 use std::{collections::HashSet, sync::RwLock};
 
 use cudarc::cupti::{
@@ -527,6 +528,11 @@ impl Builder {
 
 impl Drop for Context {
     fn drop(&mut self) {
+        trace!("resetting callback handler");
+        if let Err(err) = set_handler(None) {
+            warn!("unable to reset callback handler: {err}");
+        }
+
         if !self.subscriber_handle.is_null() {
             trace!("unsubscribing");
             if let Err(error) = unsafe { result::unsubscribe(self.subscriber_handle) } {
@@ -536,10 +542,6 @@ impl Drop for Context {
 
         if !self.user_data.is_null() {
             let _user_data = unsafe { Box::from_raw(self.user_data as *mut usize) };
-        }
-
-        if let Err(err) = set_handler(None) {
-            warn!("unable to reset callback handler: {err}");
         }
     }
 }

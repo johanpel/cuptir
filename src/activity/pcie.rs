@@ -1,3 +1,5 @@
+//! Support for pcie activity records, obtained by enabling [`crate::activity::Kind::Pcie`].
+
 use cudarc::{cupti::sys, driver};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

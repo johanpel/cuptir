@@ -1,3 +1,5 @@
+//! Support for memcpy activity records, obtained by enabling [`crate::activity::Kind::Memcpy`].
+
 use cudarc::cupti::sys;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

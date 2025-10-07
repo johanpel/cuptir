@@ -1,11 +1,10 @@
+//! Support for device activity records, obtained by enabling [`crate::activity::Kind::Device`].
+
 use cudarc::cupti::sys;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    CuptirError,
-    utils::{try_str_from_ffi, uuid_from_i8_slice},
-};
+use crate::{CuptirError, utils::uuid_from_i8_slice};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
@@ -52,6 +51,8 @@ impl TryFrom<&sys::CUpti_ActivityDevice5> for Record {
     type Error = CuptirError;
 
     fn try_from(value: &sys::CUpti_ActivityDevice5) -> Result<Self, Self::Error> {
+        // Take ownership here as docs state ownership is passed to the client.
+        let name = unsafe { std::ffi::CString::from_raw(value.name as *mut _) }.into_string()?;
         Ok(Self {
             has_concurrent_kernels: (value.flags as u32)
                 & (sys::CUpti_ActivityFlag::CUPTI_ACTIVITY_FLAG_DEVICE_CONCURRENT_KERNELS as u32)
@@ -83,9 +84,7 @@ impl TryFrom<&sys::CUpti_ActivityDevice5> for Record {
             id: value.id,
             ecc_enabled: value.eccEnabled,
             uuid: uuid_from_i8_slice(value.uuid.bytes),
-            name: unsafe { try_str_from_ffi(value.name) }
-                .unwrap_or("<null or non-utf8>")
-                .to_owned(),
+            name,
             is_cuda_visible: value.isCudaVisible,
             is_mig_enabled: value.isMigEnabled,
             gpu_instance_id: value.gpuInstanceId,
