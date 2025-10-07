@@ -1,4 +1,7 @@
-//! Types related Unified Virtual Memory (UVM) a.k.a. Unified Memory
+//! Support for unified memory activity records.
+//!
+//! Also see [`crate::Context`] and [`super::Builder::with_unified_memory_counter_configs`] for
+//! instructions on how to enable these.
 
 use cudarc::cupti::sys;
 #[cfg(feature = "serde")]

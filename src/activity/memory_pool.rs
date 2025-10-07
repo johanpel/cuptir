@@ -1,4 +1,5 @@
-//! Memory pool activity record support
+//! Support for memory pool activity records, obtained by enabling
+//! [`crate::activity::Kind::MemoryPool`].
 
 use cudarc::cupti::sys;
 #[cfg(feature = "serde")]

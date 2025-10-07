@@ -1,3 +1,6 @@
+//! Support for kernel activity records, obtained by enabling [`crate::activity::Kind::Kernel`] or
+//! [`crate::activity::Kind::ConcurrentKernel`].
+
 use cudarc::cupti::sys;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

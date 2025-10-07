@@ -1,3 +1,7 @@
+//! Support for memory activity records, obtained by enabling [`crate::activity::Kind::Memory2`].
+//!
+//! Did you notice the 2 at the end?
+
 use cudarc::cupti::sys;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

@@ -38,10 +38,7 @@ pub mod function_params {
 /// [Context::activity_enable_unified_memory_counters].
 #[derive(Debug)]
 pub struct Context {
-    // While somewhat counter-intuitive, following CUPTI examples, drop this first to
-    // call cupti unsubscribe, after which they flush the activity API.
-    _callback: callback::Context,
-
+    callback: Option<callback::Context>,
     activity: Option<activity::Context>,
 }
 
@@ -105,6 +102,21 @@ impl Context {
     }
 }
 
+impl Drop for Context {
+    fn drop(&mut self) {
+        if let Some(activity) = self.activity.take() {
+            drop(activity);
+        }
+        if let Some(callback) = self.callback.take() {
+            drop(callback);
+        }
+        tracing::trace!("finalizing");
+        if let Err(e) = cudarc::cupti::result::finalize() {
+            tracing::warn!("unable to finalize cupti {e}");
+        }
+    }
+}
+
 /// Builder to help initialize a [`Context`].
 #[derive(Default)]
 pub struct ContextBuilder {
@@ -145,8 +157,8 @@ impl ContextBuilder {
         };
 
         Ok(Context {
+            callback: Some(callback),
             activity,
-            _callback: callback,
         })
     }
 }
