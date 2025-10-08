@@ -54,3 +54,9 @@ proc-macro2 = "1.0.101"
 anyhow = "1.0.99"
 tracing-subscriber.workspace = true
 tracing.workspace = true
+cudarc = { workspace = true, features = [
+  "dynamic-linking",
+  "cupti",
+  "std",
+  "nvrtc",
+] }
