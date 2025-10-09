@@ -53,7 +53,7 @@ impl BytesTransfer {
     /// Construct a new BytesTransfer struct assuming the provided record holds
     /// valid data for a bytes transfer kind of record.
     fn try_from_record_unchecked(
-        rec: &sys::CUpti_ActivityUnifiedMemoryCounter3,
+        rec: &sys::CUpti_ActivityUnifiedMemoryCounter2,
     ) -> Result<Self, CuptirError> {
         Ok(Self {
             memory_region_bytes: rec.value,
