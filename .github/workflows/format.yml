@@ -1,4 +1,4 @@
-name: Rust
+name: format
 
 on:
   pull_request:
