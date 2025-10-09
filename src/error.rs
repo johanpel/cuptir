@@ -10,6 +10,9 @@ pub enum CuptirError {
     /// An error from the underlying cudarc::cupti module.
     #[error("cupti error {0}")]
     Cupti(#[from] cudarc::cupti::result::CuptiError),
+    /// An error from the cudarc::driver module.
+    #[error("driver error {0}")]
+    Driver(#[from] cudarc::driver::DriverError),
     /// A nullptr check failed.
     #[error("unexpected nullptr")]
     NullPointer,

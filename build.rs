@@ -376,7 +376,7 @@ fn generate_function_param_structs(source: &syn::File, version: &str) -> TokenSt
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo:rerun-if-changed=thirdparty");
+    println!("cargo:rerun-if-changed=thirdparty/cudarc");
 
     let enabled_feature = enabled_cuda_feature().expect("no cuda version selected");
 
