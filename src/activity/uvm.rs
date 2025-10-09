@@ -87,6 +87,34 @@ pub enum CounterRecord {
     Unknown,
 }
 
+#[cfg(feature = "cuda-12060")]
+impl TryFrom<&sys::CUpti_ActivityUnifiedMemoryCounter2> for CounterRecord {
+    type Error = CuptirError;
+
+    fn try_from(value: &sys::CUpti_ActivityUnifiedMemoryCounter2) -> Result<Self, Self::Error> {
+        let kind: CounterKind = value.counterKind.try_into()?;
+        Ok(match kind {
+            CounterKind::Unknown => Self::Unknown,
+            CounterKind::BytesTransferHtod => {
+                Self::BytesTransferHtoD(BytesTransfer::try_from_record_unchecked(value)?)
+            }
+            CounterKind::BytesTransferDtoh => {
+                Self::BytesTransferDtoH(BytesTransfer::try_from_record_unchecked(value)?)
+            }
+            CounterKind::BytesTransferDtod => {
+                Self::BytesTransferDtoD(BytesTransfer::try_from_record_unchecked(value)?)
+            }
+            // TODO: the ones below:
+            CounterKind::CpuPageFaultCount => Self::CpuPageFaultCount,
+            CounterKind::GpuPageFault => Self::GpuPageFault,
+            CounterKind::Thrashing => Self::Thrashing,
+            CounterKind::Throttling => Self::Throttling,
+            CounterKind::RemoteMap => Self::RemoteMap,
+        })
+    }
+}
+
+#[cfg(any(feature = "cuda-12080", feature = "cuda-12090", feature = "cuda-13000"))]
 impl TryFrom<&sys::CUpti_ActivityUnifiedMemoryCounter3> for CounterRecord {
     type Error = CuptirError;
 
