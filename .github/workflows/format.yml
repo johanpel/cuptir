@@ -1,4 +1,4 @@
-name: Rust
+name: format
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ env:
 
 jobs:
   format:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v5

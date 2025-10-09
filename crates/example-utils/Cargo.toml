@@ -3,10 +3,15 @@ name = "cuptir-example-utils"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+cuda-12080 = ["cudarc/cuda-12080"]
+cuda-12090 = ["cudarc/cuda-12090"]
+cuda-13000 = ["cudarc/cuda-13000"]
+
 [dependencies]
 cudarc = { workspace = true, features = [
-    "cuda-version-from-build-system",
-    "dynamic-linking",
+    "dynamic-loading",
     "cupti",
     "std",
     "nvrtc",

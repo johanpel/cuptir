@@ -1,0 +1,31 @@
+name: build
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - cuda-12080
+          - cuda-12090
+          - cuda-13000
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: prefix-dev/setup-pixi@v0.9.1
+        with:
+          pixi-version: v0.55.0
+          environments: ${{ matrix.version }}
+      - run: CUDA_PATH=$CONDA_PREFIX cargo build --workspace --all-targets --exclude cudarc --features ${{ matrix.version }}

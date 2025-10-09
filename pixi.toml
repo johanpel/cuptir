@@ -1,0 +1,37 @@
+[project]
+name = "cuptir"
+channels = ["nvidia", "conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+rust = "*"
+
+[environments]
+default = ["cuda-12080"]
+cuda-12080 = ["cuda-12080"]
+cuda-12090 = ["cuda-12090"]
+cuda-13000 = ["cuda-13000"]
+
+[feature.cuda-12080.dependencies]
+cuda-cudart-dev = "12.8.*"
+cuda-cupti-dev = "12.8.*"
+cuda-nvrtc = "12.8.*"
+
+[feature.cuda-12080.system-requirements]
+cuda = "12.8"
+
+[feature.cuda-12090.dependencies]
+cuda-cudart-dev = "12.9.*"
+cuda-cupti-dev = "12.9.*"
+cuda-nvrtc = "12.9.*"
+
+[feature.cuda-12090.system-requirements]
+cuda = "12.9"
+
+[feature.cuda-13000.dependencies]
+cuda-cudart-dev = "13.0.*"
+cuda-cupti-dev = "13.0.*"
+cuda-nvrtc = "13.0.*"
+
+[feature.cuda-13000.system-requirements]
+cuda = "13.0"

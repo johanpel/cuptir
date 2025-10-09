@@ -21,3 +21,7 @@ target
 *.log
 tarpaulin-report.html
 lcov.info
+
+# pixi environments
+.pixi/*
+!.pixi/config.toml

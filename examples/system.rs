@@ -24,7 +24,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     cudarc::driver::CudaContext::new(0)?;
 
-    std::thread::sleep(std::time::Duration::from_secs(5));
-
     Ok(())
 }
