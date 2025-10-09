@@ -33,7 +33,7 @@ pub(crate) unsafe fn try_demangle_from_ffi(c_str: *const std::ffi::c_char) -> Op
     })
 }
 
-/// Return a UUID constructed from a slice of i8s.
-pub(crate) fn uuid_from_i8_slice(bytes: [i8; 16]) -> uuid::Uuid {
+/// Return a UUID constructed from a slice of c_chars.
+pub(crate) fn uuid_from_i8_slice(bytes: [std::ffi::c_char; 16]) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes.map(|x| x as u8))
 }
