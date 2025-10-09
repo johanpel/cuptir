@@ -21,9 +21,9 @@ version.workspace = true
 default = []
 serde = ["dep:serde", "uuid/serde"]
 # only support these for now :tm:
-cuda-12080 = ["cudarc/cuda-12080"]
-cuda-12090 = ["cudarc/cuda-12090"]
-cuda-13000 = ["cudarc/cuda-13000"]
+cuda-12080 = ["cudarc/cuda-12080", "cuptir-example-utils/cuda-12080"]
+cuda-12090 = ["cudarc/cuda-12090", "cuptir-example-utils/cuda-12090"]
+cuda-13000 = ["cudarc/cuda-13000", "cuptir-example-utils/cuda-13000"]
 
 [dependencies]
 strum = { version = "0.27", features = ["derive"] }
@@ -31,7 +31,7 @@ cpp_demangle = "0.4.4"
 serde = { version = "1.0.129", features = ["derive"], optional = true }
 thiserror = "2.0.12"
 cudarc = { workspace = true, default-features = false, features = [
-  "dynamic-linking",
+  "dynamic-loading",
   "cupti",
   "std",
 ] }
@@ -54,8 +54,8 @@ proc-macro2 = "1.0.101"
 anyhow = "1.0.99"
 tracing-subscriber.workspace = true
 tracing.workspace = true
-cudarc = { workspace = true, features = [
-  "dynamic-linking",
+cudarc = { workspace = true, default-features = false, features = [
+  "dynamic-loading",
   "cupti",
   "std",
   "nvrtc",
