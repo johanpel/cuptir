@@ -38,10 +38,35 @@ pub struct Record {
     pub utilized_size: Option<u64>,
 }
 
+#[cfg(any(feature = "cuda-12060"))]
 impl TryFrom<&sys::CUpti_ActivityMemoryPool2> for Record {
     type Error = CuptirError;
 
     fn try_from(value: &sys::CUpti_ActivityMemoryPool2) -> Result<Self, Self::Error> {
+        let op = value.memoryPoolOperationType.try_into()?;
+        let pool_type = value.memoryPoolType.try_into()?;
+        Ok(Self {
+            memory_pool_operation_type: op,
+            memory_pool_type: pool_type,
+            correlation_id: value.correlationId,
+            process_id: value.processId,
+            device_id: value.deviceId,
+            min_bytes_to_keep: matches!(op, OperationType::Trimmed).then_some(value.minBytesToKeep),
+            address: value.address,
+            size: matches!(pool_type, PoolType::Local).then_some(value.size),
+            release_threshold: matches!(pool_type, PoolType::Local)
+                .then_some(value.releaseThreshold),
+            timestamp: value.timestamp,
+            utilized_size: matches!(pool_type, PoolType::Local).then_some(value.utilizedSize),
+        })
+    }
+}
+
+#[cfg(any(feature = "cuda-12080", feature = "cuda-12090", feature = "cuda-13000"))]
+impl TryFrom<&sys::CUpti_ActivityMemoryPool3> for Record {
+    type Error = CuptirError;
+
+    fn try_from(value: &sys::CUpti_ActivityMemoryPool3) -> Result<Self, Self::Error> {
         let op = value.memoryPoolOperationType.try_into()?;
         let pool_type = value.memoryPoolType.try_into()?;
         Ok(Self {

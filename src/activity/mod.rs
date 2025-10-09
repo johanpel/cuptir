@@ -325,6 +325,9 @@ impl Record {
                 }))
             }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_MEMCPY => {
+                #[cfg(any(feature = "cuda-12060"))]
+                let memcpy_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityMemcpy5) };
+                #[cfg(any(feature = "cuda-12080", feature = "cuda-12090", feature = "cuda-13000"))]
                 let memcpy_record = unsafe { &*(record_ptr as *const sys::CUpti_ActivityMemcpy6) };
                 Ok(Record::Memcpy(memcpy_record.try_into()?))
             }
@@ -349,6 +352,10 @@ impl Record {
                 }))
             }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER => {
+                #[cfg(any(feature = "cuda-12060"))]
+                let unified_memory_counter_record =
+                    unsafe { &*(record_ptr as *const sys::CUpti_ActivityUnifiedMemoryCounter2) };
+                #[cfg(any(feature = "cuda-12080", feature = "cuda-12090", feature = "cuda-13000"))]
                 let unified_memory_counter_record =
                     unsafe { &*(record_ptr as *const sys::CUpti_ActivityUnifiedMemoryCounter3) };
                 Ok(Record::UnifiedMemoryCounter(
@@ -457,6 +464,7 @@ impl Context {
     pub(crate) fn enable_hardware_tracing(&mut self) -> Result<(), CuptirError> {
         if !self.latency_timestamps {
             trace!("enabling hardware tracing for activity records");
+            #[cfg(any(feature = "cuda-12080", feature = "cuda-12090", feature = "cuda-13000"))]
             result::activity::enable_hw_trace(1u8)?;
             Ok(())
         } else {
@@ -566,6 +574,7 @@ pub struct Builder {
 
     latency_timestamps: bool,
     allocation_source: bool,
+    #[cfg(not(feature = "cuda-12060"))]
     disable_all_sync_records: bool,
 
     unified_memory_counter_configs: HashSet<uvm::CounterConfig>,
@@ -659,6 +668,7 @@ impl Builder {
     /// Set whether to enable collecting records for all synchronization operations.
     ///
     /// Enabled by default.
+    #[cfg(not(feature = "cuda-12060"))]
     pub fn all_sync_records(mut self, enabled: bool) -> Self {
         self.disable_all_sync_records = !enabled;
         self
@@ -793,6 +803,7 @@ impl Builder {
                 trace!("enabling allocation source tracking");
                 result::activity::enable_allocation_source(1)?;
             }
+            #[cfg(any(feature = "cuda-12080", feature = "cuda-12090", feature = "cuda-13000"))]
             if self.disable_all_sync_records {
                 trace!("disabling all sync records collection");
                 result::activity::enable_all_sync_records(0)?;
