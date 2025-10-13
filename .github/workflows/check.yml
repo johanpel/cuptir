@@ -16,6 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         version:
+          - cuda-12060
           - cuda-12080
           - cuda-12090
           - cuda-13000
@@ -29,6 +30,6 @@ jobs:
         with:
           components: clippy
       - name: Check
-        run: cargo check -v --workspace --all-targets --exclude cudarc --features ${{ matrix.version }},serde
+        run: cargo check -v --workspace --all-targets --exclude cudarc --features ${{ matrix.version }},serde,dynamic-loading
       - name: Clippy
-        run: cargo clippy -v --workspace --all-targets --exclude cudarc --features ${{ matrix.version }},serde
+        run: cargo clippy -v --workspace --all-targets --exclude cudarc --features ${{ matrix.version }},serde,dynamic-loading

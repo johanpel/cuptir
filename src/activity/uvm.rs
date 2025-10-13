@@ -53,7 +53,7 @@ impl BytesTransfer {
     /// Construct a new BytesTransfer struct assuming the provided record holds
     /// valid data for a bytes transfer kind of record.
     fn try_from_record_unchecked(
-        rec: &sys::CUpti_ActivityUnifiedMemoryCounter3,
+        rec: &sys::CUpti_ActivityUnifiedMemoryCounter2,
     ) -> Result<Self, CuptirError> {
         Ok(Self {
             memory_region_bytes: rec.value,
@@ -87,10 +87,10 @@ pub enum CounterRecord {
     Unknown,
 }
 
-impl TryFrom<&sys::CUpti_ActivityUnifiedMemoryCounter3> for CounterRecord {
+impl TryFrom<&sys::CUpti_ActivityUnifiedMemoryCounter2> for CounterRecord {
     type Error = CuptirError;
 
-    fn try_from(value: &sys::CUpti_ActivityUnifiedMemoryCounter3) -> Result<Self, Self::Error> {
+    fn try_from(value: &sys::CUpti_ActivityUnifiedMemoryCounter2) -> Result<Self, Self::Error> {
         let kind: CounterKind = value.counterKind.try_into()?;
         Ok(match kind {
             CounterKind::Unknown => Self::Unknown,

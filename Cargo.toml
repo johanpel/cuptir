@@ -20,7 +20,14 @@ version.workspace = true
 [features]
 default = []
 serde = ["dep:serde", "uuid/serde"]
-# only support these for now :tm:
+# In order to control how cudarc links to cuda, we need to mimic its features to cover all use
+# cases. Only one type of linking can be enabled at a time.
+static-linking = ["cudarc/static-linking", "cuptir-example-utils/static-linking"]
+dynamic-linking = ["cudarc/dynamic-linking", "cuptir-example-utils/dynamic-linking"]
+dynamic-loading = ["cudarc/dynamic-loading", "cuptir-example-utils/dynamic-loading"]
+# We're not supporting the cuda-from-build-system feature in cudarc, because it uses nvcc to figure
+# out the version. Only support these for now :tm:, they need to be explicitly set:
+cuda-12060 = ["cudarc/cuda-12060", "cuptir-example-utils/cuda-12060"]
 cuda-12080 = ["cudarc/cuda-12080", "cuptir-example-utils/cuda-12080"]
 cuda-12090 = ["cudarc/cuda-12090", "cuptir-example-utils/cuda-12090"]
 cuda-13000 = ["cudarc/cuda-13000", "cuptir-example-utils/cuda-13000"]
@@ -31,7 +38,6 @@ cpp_demangle = "0.4.4"
 serde = { version = "1.0.129", features = ["derive"], optional = true }
 thiserror = "2.0.12"
 cudarc = { workspace = true, default-features = false, features = [
-  "dynamic-loading",
   "cupti",
   "std",
 ] }
@@ -55,7 +61,6 @@ anyhow = "1.0.99"
 tracing-subscriber.workspace = true
 tracing.workspace = true
 cudarc = { workspace = true, default-features = false, features = [
-  "dynamic-loading",
   "cupti",
   "std",
   "nvrtc",

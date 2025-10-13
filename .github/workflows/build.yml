@@ -16,6 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         version:
+          - cuda-12060
           - cuda-12080
           - cuda-12090
           - cuda-13000
@@ -28,4 +29,4 @@ jobs:
         with:
           pixi-version: v0.55.0
           environments: ${{ matrix.version }}
-      - run: CUDA_PATH=$CONDA_PREFIX cargo build --workspace --all-targets --exclude cudarc --features ${{ matrix.version }}
+      - run: CUDA_PATH=$CONDA_PREFIX cargo build --workspace --all-targets --exclude cudarc --features ${{ matrix.version }},dynamic-loading
