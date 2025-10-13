@@ -16,6 +16,7 @@ cuda-13000 = ["cudarc/cuda-13000"]
 [dependencies]
 cudarc = { workspace = true, features = [
     "cupti",
+    "driver",
     "std",
     "nvrtc",
 ] }

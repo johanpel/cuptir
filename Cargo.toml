@@ -20,7 +20,7 @@ version.workspace = true
 [features]
 default = []
 serde = ["dep:serde", "uuid/serde"]
-# In order to control how cudarc links to cuda, we need to mimic its features to cover all use
+# In order to control how cudarc links to cupti, we need to mimic its features to cover all use
 # cases. Only one type of linking can be enabled at a time.
 static-linking = ["cudarc/static-linking", "cuptir-example-utils/static-linking"]
 dynamic-linking = ["cudarc/dynamic-linking", "cuptir-example-utils/dynamic-linking"]
