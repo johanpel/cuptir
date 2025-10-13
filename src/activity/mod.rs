@@ -352,12 +352,8 @@ impl Record {
                 }))
             }
             sys::CUpti_ActivityKind::CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER => {
-                #[cfg(any(feature = "cuda-12060"))]
                 let unified_memory_counter_record =
                     unsafe { &*(record_ptr as *const sys::CUpti_ActivityUnifiedMemoryCounter2) };
-                #[cfg(any(feature = "cuda-12080", feature = "cuda-12090", feature = "cuda-13000"))]
-                let unified_memory_counter_record =
-                    unsafe { &*(record_ptr as *const sys::CUpti_ActivityUnifiedMemoryCounter3) };
                 Ok(Record::UnifiedMemoryCounter(
                     unified_memory_counter_record.try_into()?,
                 ))
