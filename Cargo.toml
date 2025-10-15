@@ -49,6 +49,11 @@ serial_test = "3.2.0"
 cuptir-example-utils = { path = "crates/example-utils" }
 tracing-subscriber.workspace = true
 tracing.workspace = true
+cudarc = { workspace = true, default-features = false, features = [
+  "cupti",
+  "runtime",
+  "std",
+] }
 
 [build-dependencies]
 bindgen = "0.72.1"
