@@ -26,8 +26,9 @@ pub(crate) unsafe fn try_demangle_from_ffi(c_str: *const std::ffi::c_char) -> Op
     unsafe { try_cstr_from_ffi(c_str) }.and_then(|c_str| {
         c_str.to_str().ok().map(|utf8_str| {
             cpp_demangle::Symbol::new(utf8_str)
-                .map(|symbol| symbol.to_string())
                 .ok()
+                .map(|symbol| symbol.demangle().ok())
+                .flatten()
                 .unwrap_or(utf8_str.to_owned())
         })
     })
