@@ -53,6 +53,10 @@ pub struct RecordBuffer {
     valid_size: usize,
 }
 
+// Safety: ptr is safe to Send because ownership is immediately moved into a RecordBuffer after
+// wraping it in buffer_complete_callback, without propagating it anywhere else.
+unsafe impl Send for RecordBuffer {}
+
 impl RecordBuffer {
     /// Attempt to construct a new RecordBuffer.
     ///
@@ -1474,6 +1478,40 @@ pub(crate) mod test {
         assert_eq!(num_created, 1);
         assert_eq!(num_trimmed, 3);
         assert_eq!(num_destroyed, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn record_buffer_is_send() -> TestResult {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cupti_tx = tx.clone();
+
+        let _context = crate::Context::builder()
+            .with_activity(
+                Builder::new()
+                    .with_kinds([Kind::ConcurrentKernel])
+                    .with_record_buffer_handler(move |buffer| {
+                        cupti_tx
+                            .send(buffer)
+                            .map_err(|_| std::sync::mpsc::SendError(()))?;
+                        Ok(())
+                    }),
+            )
+            .build()?;
+
+        run_a_kernel()?;
+        drop(_context);
+        drop(tx);
+
+        rx.iter().for_each(|buffer| {
+            buffer.into_iter().for_each(|maybe_record| {
+                assert!(maybe_record.is_ok());
+                let rec = maybe_record.unwrap();
+                assert!(matches!(rec, Record::Kernel(_)));
+            })
+        });
 
         Ok(())
     }
