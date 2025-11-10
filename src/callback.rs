@@ -550,13 +550,16 @@ impl Drop for Context {
 mod test {
     use serial_test::serial;
 
-    use std::sync::{Arc, atomic::AtomicU8};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    };
 
     use super::*;
 
     type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 
-    fn test_handler(
+    fn handle_driver_runtime_callback(
         data: Data,
         driver_count: &Arc<AtomicU8>,
         runtime_count: &Arc<AtomicU8>,
@@ -564,13 +567,13 @@ mod test {
         match data {
             Data::DriverApi(rec) => {
                 if rec.function == driver::Function::cuMemGetInfo_v2 {
-                    driver_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    driver_count.fetch_add(1, Ordering::Relaxed);
                     assert_eq!(rec.function_name().unwrap(), "cuMemGetInfo_v2")
                 }
             }
             Data::RuntimeApi(rec) => {
                 if rec.function == runtime::Function::cudaMemGetInfo_v3020 {
-                    runtime_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    runtime_count.fetch_add(1, Ordering::Relaxed);
                     assert_eq!(rec.function_name().unwrap(), "cudaMemGetInfo_v3020")
                 }
             }
@@ -591,7 +594,7 @@ mod test {
             .with_handler({
                 let d = Arc::clone(&driver_count);
                 let r = Arc::clone(&runtime_count);
-                move |data| test_handler(data, &d, &r)
+                move |data| handle_driver_runtime_callback(data, &d, &r)
             })
             .build()?;
 
@@ -601,8 +604,8 @@ mod test {
 
         drop(context);
 
-        assert_eq!(driver_count.load(std::sync::atomic::Ordering::Relaxed), 2);
-        assert_eq!(runtime_count.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(driver_count.load(Ordering::Relaxed), 2);
+        assert_eq!(runtime_count.load(Ordering::Relaxed), 2);
 
         Ok(())
     }
@@ -618,7 +621,7 @@ mod test {
             .with_handler({
                 let d = Arc::clone(&driver_count);
                 let r = Arc::clone(&runtime_count);
-                move |data| test_handler(data, &d, &r)
+                move |data| handle_driver_runtime_callback(data, &d, &r)
             })
             .build()?;
 
@@ -626,8 +629,57 @@ mod test {
 
         drop(context);
 
-        assert_eq!(driver_count.load(std::sync::atomic::Ordering::Relaxed), 2);
-        assert_eq!(runtime_count.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(driver_count.load(Ordering::Relaxed), 2);
+        assert_eq!(runtime_count.load(Ordering::Relaxed), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn resource_and_synchronize() -> TestResult {
+        let create_count = Arc::new(AtomicU8::new(0));
+        let destroy_count = Arc::new(AtomicU8::new(0));
+        let sync_count = Arc::new(AtomicU8::new(0));
+
+        let context = Builder::new()
+            .with_domains([Domain::Resource, Domain::Synchronize])
+            .with_handler({
+                let create = Arc::clone(&create_count);
+                let destroy = Arc::clone(&destroy_count);
+                let sync = Arc::clone(&sync_count);
+                move |data| {
+                    match data {
+                        Data::Resource(resource_data) => match resource_data.id {
+                            CallbackIdResource::StreamCreated => {
+                                create.fetch_add(1, Ordering::Relaxed);
+                            }
+                            CallbackIdResource::StreamDestroyStarting => {
+                                destroy.fetch_add(1, Ordering::Relaxed);
+                            }
+                            _ => (),
+                        },
+                        Data::Synchronize(_) => {
+                            sync.fetch_add(1, Ordering::Relaxed);
+                        }
+                        _ => (),
+                    }
+                    Ok(())
+                }
+            })
+            .build()?;
+
+        // create, sync, and destroy a stream, this should produce two resource callbacks and two
+        // sync callback (one for the explicit synchronize, and stream destroy will do it again)
+        let dummy_stream = cudarc::driver::CudaContext::new(0)?.new_stream()?;
+        dummy_stream.synchronize()?;
+        drop(dummy_stream);
+
+        drop(context);
+
+        assert_eq!(create_count.load(Ordering::Relaxed), 1);
+        assert_eq!(destroy_count.load(Ordering::Relaxed), 1);
+        assert_eq!(sync_count.load(Ordering::Relaxed), 2);
 
         Ok(())
     }
